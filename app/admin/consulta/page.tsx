@@ -5,7 +5,6 @@ import { ASISTENCIAS, EMPLEADOS, badgeClass, nombreCompleto } from "@/lib/mock-a
 const ESTADOS = ["A TIEMPO", "TARDE", "FALTA", "JUSTIFICADO", "FERIADO", "VACACIONES", "TEMPRANO", "COMPLETADO"];
 
 function estadoDe(f: (typeof ASISTENCIAS)[number]) {
-  // Para filtrar: considera entrada y salida como estados independientes
   return [f.estadoEntrada, f.estadoSalida].filter(Boolean) as string[];
 }
 
@@ -34,6 +33,11 @@ export default function Consulta() {
     setEstados((s) => (s.includes(e) ? s.filter((x) => x !== e) : [...s, e]));
   }
 
+  function limpiar() {
+    setQ(""); setEstados([]); setSoloExtras(false); setSoloAnticipadas(false);
+    setSoloSinSalida(false); setGerencia("Todas");
+  }
+
   const grupos = useMemo(() => {
     const ql = q.trim().toLowerCase();
     const emps = EMPLEADOS.filter((e) => {
@@ -54,7 +58,6 @@ export default function Consulta() {
         const extras = Math.round(filas.reduce((a, f) => a + f.extras, 0) * 100) / 100;
         return { e, filas, tardes, faltas, justs, extras };
       })
-      .filter((g) => g.filas.length > 0 || ql !== "" || estados.length === 0)
       .filter((g) => g.filas.length > 0)
       .sort((a, b) => {
         if (orden === "tardes") return b.tardes - a.tardes;
@@ -70,128 +73,240 @@ export default function Consulta() {
 
   return (
     <div>
-      <div className="card">
-        <h3>Consulta flexible — una sola vista agrupada por empleado</h3>
-        <div className="row">
-          <div style={{ flex: 2, minWidth: 220 }}>
-            <label>Buscador (nombre, cédula, cargo)</label>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ej. luis, 002, vendedor" />
+      {/* Page header */}
+      <div className="row-between" style={{ marginBottom: 20 }}>
+        <div>
+          <h2 style={{ marginBottom: 4 }}>Consulta flexible ★</h2>
+          <p className="muted">Vista única agrupada por empleado · filtros en tiempo real</p>
+        </div>
+        <span style={{ background: "var(--brand-l)", color: "var(--brand)", border: "1.5px solid var(--brand-mid)", borderRadius: "var(--r-full)", padding: "4px 14px", fontSize: ".8rem", fontWeight: 700 }}>
+          {grupos.length} empleados · {totalReg} registros
+        </span>
+      </div>
+
+      {/* Filter bar */}
+      <div className="filter-bar">
+        {/* Row 1: search + dates + gerencia + orden */}
+        <div className="filter-row">
+          <div className="form-group" style={{ flex: "2 1 200px" }}>
+            <label htmlFor="q-buscar">🔍 Buscador</label>
+            <input id="q-buscar" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Nombre, cédula, cargo…" />
           </div>
-          <div><label>Desde</label><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} /></div>
-          <div><label>Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} /></div>
-          <div><label>Gerencia</label>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label>Desde</label>
+            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label>Hasta</label>
+            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 130px" }}>
+            <label>Gerencia</label>
             <select value={gerencia} onChange={(e) => setGerencia(e.target.value)}>
               {gerencias.map((g) => <option key={g}>{g}</option>)}
             </select>
           </div>
-          <div><label>Ordenar por</label>
+          <div className="form-group" style={{ flex: "1 1 130px" }}>
+            <label>Ordenar por</label>
             <select value={orden} onChange={(e) => setOrden(e.target.value as typeof orden)}>
-              <option value="nombre">Nombre</option><option value="tardes">Tardes</option>
-              <option value="faltas">Faltas</option><option value="extras">Extras</option>
+              <option value="nombre">Nombre</option>
+              <option value="tardes">Tardes</option>
+              <option value="faltas">Faltas</option>
+              <option value="extras">Extras</option>
             </select>
           </div>
         </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <button className="btn" onClick={() => preset(1)}>Hoy</button>
-          <button className="btn" onClick={() => preset(2)}>Ayer-Hoy</button>
-          <button className="btn" onClick={() => preset(7)}>Semana</button>
-          <button className="btn" onClick={() => { setQ(""); setEstados([]); setSoloExtras(false); setSoloAnticipadas(false); setSoloSinSalida(false); setGerencia("Todas"); }}>Limpiar</button>
-          <span className="muted">{grupos.length} empleados · {totalReg} registros</span>
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Estados (multi-select, se combinan con lo demás)</label>
-          <div className="row">
+
+        {/* Row 2: presets + estados + switches */}
+        <div className="filter-row">
+          <div className="row" style={{ flex: "0 0 auto", gap: 6 }}>
+            <button className="preset-btn" onClick={() => preset(1)}>Hoy</button>
+            <button className="preset-btn" onClick={() => preset(2)}>Ayer–Hoy</button>
+            <button className="preset-btn" onClick={() => preset(7)}>Semana</button>
+            <button className="btn btn-sm btn-ghost" onClick={limpiar}>✕ Limpiar</button>
+          </div>
+
+          <div className="row" style={{ flex: "1 1 auto", gap: 6, flexWrap: "wrap" }}>
             {ESTADOS.map((s) => (
-              <label key={s} style={{ display: "inline-flex", gap: 6, alignItems: "center", border: "1px solid var(--line)", borderRadius: 999, padding: "4px 10px", margin: 0 }}>
-                <input type="checkbox" style={{ width: "auto" }} checked={estados.includes(s)} onChange={() => toggleEstado(s)} /> {s}
+              <label key={s} className={"pill-check" + (estados.includes(s) ? " checked" : "")}>
+                <input type="checkbox" style={{ width: "auto" }} checked={estados.includes(s)} onChange={() => toggleEstado(s)} />
+                {s}
               </label>
             ))}
           </div>
-        </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}><input type="checkbox" style={{ width: "auto" }} checked={soloExtras} onChange={(e) => setSoloExtras(e.target.checked)} /> Solo con extras</label>
-          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}><input type="checkbox" style={{ width: "auto" }} checked={soloAnticipadas} onChange={(e) => setSoloAnticipadas(e.target.checked)} /> Solo salida anticipada</label>
-          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}><input type="checkbox" style={{ width: "auto" }} checked={soloSinSalida} onChange={(e) => setSoloSinSalida(e.target.checked)} /> Solo sin salida</label>
+
+          <div className="row" style={{ gap: 16, flex: "0 0 auto" }}>
+            <label className="switch-wrap" htmlFor="sw-extras">
+              <input id="sw-extras" type="checkbox" checked={soloExtras} onChange={e => setSoloExtras(e.target.checked)} />
+              <div className="switch-track" />
+              <span className="switch-label">Solo extras</span>
+            </label>
+            <label className="switch-wrap" htmlFor="sw-antic">
+              <input id="sw-antic" type="checkbox" checked={soloAnticipadas} onChange={e => setSoloAnticipadas(e.target.checked)} />
+              <div className="switch-track" />
+              <span className="switch-label">S. anticipada</span>
+            </label>
+            <label className="switch-wrap" htmlFor="sw-sin">
+              <input id="sw-sin" type="checkbox" checked={soloSinSalida} onChange={e => setSoloSinSalida(e.target.checked)} />
+              <div className="switch-track" />
+              <span className="switch-label">Sin salida</span>
+            </label>
+          </div>
         </div>
       </div>
 
+      {/* Empty state */}
       {grupos.length === 0 && (
-        <div className="card"><b>Sin resultados para esos filtros.</b><p className="muted">Amplía el rango o limpia estados. Los inactivos no generan FALTA.</p></div>
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-icon">🔍</div>
+            <h4>Sin resultados</h4>
+            <p>Amplía el rango de fechas o limpia los filtros de estado.<br />Los empleados inactivos no generan FALTA.</p>
+          </div>
+        </div>
       )}
 
+      {/* Employee accordion cards */}
       {grupos.map(({ e, filas, tardes, faltas, justs, extras }) => (
-        <div className="card" key={e.cedula}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <div>
-              <button className="btn" style={{ border: "none", padding: 0, fontSize: 16 }} onClick={() => setExpandida(expandida === e.cedula ? null : e.cedula)}>
-                {expandida === e.cedula ? "▾" : "▸"} <b>{e.nombre} {e.apellido}</b>
-              </button>
-              <span className="muted"> · {e.cargo} · {e.gerencia} · <span className="mono">{e.cedula}</span> · {e.activo ? "Activo" : "Inactivo"}</span>
+        <div className="card card-hover" key={e.cedula} style={{ marginBottom: 10 }}>
+          <div className="accordion-header" onClick={() => setExpandida(expandida === e.cedula ? null : e.cedula)}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 38, height: 38, borderRadius: "var(--r-md)", background: "var(--brand-l)", color: "var(--brand)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: ".9rem", flexShrink: 0 }}>
+                {e.nombre[0]}{e.apellido[0]}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: ".9375rem", color: "var(--ink)" }}>{e.nombre} {e.apellido}</div>
+                <div className="muted" style={{ fontSize: ".78rem" }}>{e.cargo} · {e.gerencia} · <span className="mono">{e.cedula}</span></div>
+              </div>
             </div>
-            <div className="row">
-              <span className="badge b-tarde">{tardes} tardes</span>
-              <span className="badge b-falta">{faltas} faltas</span>
+            <div className="row" style={{ gap: 8 }}>
+              <span className="badge b-tarde">{tardes} tarde{tardes !== 1 ? "s" : ""}</span>
+              <span className="badge b-falta">{faltas} falta{faltas !== 1 ? "s" : ""}</span>
               <span className="badge b-just">{justs} justif.</span>
-              <span className="badge b-tiempo">{extras}h extra</span>
-              <button className="btn" onClick={() => setFicha(e.cedula)}>Ver ficha</button>
+              <span className="badge b-comp">{extras}h extra</span>
+              <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                onClick={(ev) => { ev.stopPropagation(); setFicha(ficha === e.cedula ? null : e.cedula); }}>
+                {ficha === e.cedula ? "Cerrar ficha" : "Ver ficha"}
+              </button>
+              <span className={"accordion-arrow" + (expandida === e.cedula ? " open" : "")}>▶</span>
             </div>
           </div>
+
           {expandida === e.cedula && (
-            <table style={{ marginTop: 8 }}>
-              <thead><tr><th>Fecha</th><th>E / S</th><th>Estado</th><th>Extras</th><th>Autorizador</th><th>Acción</th></tr></thead>
-              <tbody>
-                {filas.map((f, i) => (
-                  <tr key={i}>
-                    <td>{f.fecha}</td><td>{f.entrada ?? "—"} / {f.salida ?? "—"}</td>
-                    <td><span className={badgeClass(f.estadoEntrada)}>{f.estadoEntrada}</span>{" "}
-                      {f.estadoSalida && <span className={badgeClass(f.estadoSalida)}>{f.estadoSalida}</span>}</td>
-                    <td>{f.extras}h</td><td>{f.autorizador ?? "—"}</td>
-                    <td>
-                      {(f.estadoEntrada === "TARDE" || f.estadoEntrada === "FALTA") && (
-                        <span className="row">
-                          <button className="btn" onClick={() => setJust({ cedula: f.cedula, fecha: f.fecha })}>Justificar</button>
-                          <button className="btn" onClick={() => setPase(f.cedula)}>Previo aviso</button>
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="accordion-body">
+              <hr className="divider" style={{ marginTop: 0 }} />
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Entrada / Salida</th>
+                      <th>Estado</th>
+                      <th>Extras</th>
+                      <th>Autorizador</th>
+                      <th>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filas.map((f, i) => (
+                      <tr key={i}>
+                        <td className="mono" style={{ fontWeight: 600 }}>{f.fecha}</td>
+                        <td className="mono">{f.entrada ?? "—"} / {f.salida ?? "—"}</td>
+                        <td>
+                          <span className={badgeClass(f.estadoEntrada)}>{f.estadoEntrada}</span>{" "}
+                          {f.estadoSalida && <span className={badgeClass(f.estadoSalida)}>{f.estadoSalida}</span>}
+                        </td>
+                        <td>{f.extras > 0 ? <span style={{ color: "var(--ok)", fontWeight: 600 }}>+{f.extras}h</span> : <span className="muted">—</span>}</td>
+                        <td className="muted">{f.autorizador ?? "—"}</td>
+                        <td>
+                          {(f.estadoEntrada === "TARDE" || f.estadoEntrada === "FALTA") && (
+                            <div className="row" style={{ gap: 6 }}>
+                              <button className="btn btn-sm btn-warn-outline" onClick={() => setJust({ cedula: f.cedula, fecha: f.fecha })}>
+                                📎 Justificar
+                              </button>
+                              <button className="btn btn-sm" onClick={() => setPase(f.cedula)}>
+                                🔑 Pase previo
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
         </div>
       ))}
 
+      {/* Ficha lateral */}
       {fichaEmp && (
-        <div className="card">
-          <h4>Ficha — {fichaEmp.nombre} {fichaEmp.apellido} <span className="muted mono">{fichaEmp.cedula}</span></h4>
-          <p className="muted">{fichaEmp.cargo} · {fichaEmp.gerencia} · {fichaEmp.activo ? "Activo" : "Inactivo"} · Cronología del rango {desde} → {hasta} con totales arriba. (Mock: conserva filtros al cerrar.)</p>
-          <div className="row">
-            <a className="btn" href={`/admin/empleados/${fichaEmp.cedula}`}>Abrir histórico completo</a>
-            <button className="btn" onClick={() => setFicha(null)}>Cerrar (vuelve al listado)</button>
+        <div className="panel-lateral">
+          <div className="modal-header">
+            <div>
+              <div className="modal-title">📋 Ficha — {fichaEmp.nombre} {fichaEmp.apellido}</div>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {fichaEmp.cargo} · {fichaEmp.gerencia} · <span className="mono">{fichaEmp.cedula}</span>
+                {" · "}
+                <span className={fichaEmp.activo ? "badge b-tiempo" : "badge b-inactive"} style={{ fontSize: ".68rem" }}>
+                  {fichaEmp.activo ? "Activo" : "Inactivo"}
+                </span>
+              </div>
+            </div>
+            <button className="modal-close" onClick={() => setFicha(null)}>×</button>
+          </div>
+          <p className="muted">Cronología del rango {desde} → {hasta}. Los filtros se conservan al cerrar.</p>
+          <div className="row" style={{ marginTop: 14 }}>
+            <a className="btn btn-primary btn-sm" href={`/admin/empleados/${fichaEmp.cedula}`}>Histórico completo →</a>
+            <button className="btn btn-sm btn-ghost" onClick={() => setFicha(null)}>Cerrar</button>
           </div>
         </div>
       )}
 
+      {/* Modal justificar */}
       {just && (
-        <div className="card">
-          <h4>Justificar — {nombreCompleto(just.cedula)} · {just.fecha} (documento opcional)</h4>
-          <label>Respaldo (opcional: URL o archivo)</label><input placeholder="Opcional — reposo.pdf" />
-          <label>Motivo / observaciones (obligatorio)</label><textarea placeholder="Ej. cita médica comprobable luego" />
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn btn-ok" onClick={() => setJust(null)}>Guardar JUSTIFICADO</button>
-            <button className="btn" onClick={() => setJust(null)}>Cerrar</button>
+        <div className="modal-bg" onClick={() => setJust(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">📎 Justificar — {nombreCompleto(just.cedula)} · {just.fecha}</div>
+              <button className="modal-close" onClick={() => setJust(null)}>×</button>
+            </div>
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label>Respaldo (URL o archivo, opcional)</label>
+              <input placeholder="Ej. reposo.pdf, https://…" />
+            </div>
+            <div className="form-group">
+              <label>Motivo / observaciones <span style={{ color: "var(--bad)" }}>*</span></label>
+              <textarea placeholder="Ej. cita médica comprobable el día siguiente" />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ok" onClick={() => setJust(null)}>✓ Guardar JUSTIFICADO</button>
+              <button className="btn btn-ghost" onClick={() => setJust(null)}>Cancelar</button>
+            </div>
           </div>
         </div>
       )}
 
+      {/* Modal pase previo */}
       {pase && (
-        <div className="card">
-          <h4>Previo aviso — {nombreCompleto(pase)} (sin documento, solo motivo)</h4>
-          <label>Motivo del aviso (obligatorio)</label><input placeholder="Ej. aviso previo: llegará 09:30" />
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn btn-ok" onClick={() => setPase(null)}>Crear pase (permite entrar fuera de margen 60 min)</button>
-            <button className="btn" onClick={() => setPase(null)}>Cerrar</button>
+        <div className="modal-bg" onClick={() => setPase(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">🔑 Pase previo — {nombreCompleto(pase)}</div>
+              <button className="modal-close" onClick={() => setPase(null)}>×</button>
+            </div>
+            <p className="muted" style={{ marginBottom: 16 }}>
+              Permite entrar fuera del margen de 60 min. Solo se requiere motivo (sin documento).
+            </p>
+            <div className="form-group">
+              <label>Motivo del aviso <span style={{ color: "var(--bad)" }}>*</span></label>
+              <input placeholder="Ej. cita médica, llegará 09:30" />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-primary" onClick={() => setPase(null)}>✓ Crear pase</button>
+              <button className="btn btn-ghost" onClick={() => setPase(null)}>Cancelar</button>
+            </div>
           </div>
         </div>
       )}

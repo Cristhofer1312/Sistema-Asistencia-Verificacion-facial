@@ -1,0 +1,17 @@
+// Esquema Prisma alineado a SRS v3.2 (10 tablas + vista). Completar tipos al cablear Fase 2.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Tablas: gerencias, roles, usuarios, empleados, reglas_asistencia,
+// asistencias, feriados, vacaciones_empleado, pases_previos, logs_auditoria
+// Vista: v_asistencias_diarias (proyecta FALTA / FERIADO / VACACIONES)
+model Gerencia {
+  id     Int    @id @default(autoincrement())
+  nombre String @unique @db.VarChar(100)
+}

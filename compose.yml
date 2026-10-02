@@ -1,0 +1,42 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://asistencia:asistencia@db:5432/asistencia
+      API_KIOSCO_KEY: ${API_KIOSCO_KEY:-kiosco-local-key}
+      GUARDAR_FOTO_FICHAJE: ${GUARDAR_FOTO_FICHAJE:-false}
+      TZ: America/Caracas
+    depends_on:
+      - db
+    networks:
+      - asistencia-net
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: asistencia
+      POSTGRES_PASSWORD: asistencia
+      POSTGRES_DB: asistencia
+      TZ: America/Caracas
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    networks:
+      - asistencia-net
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app
+    networks:
+      - asistencia-net
+
+volumes:
+  pgdata:
+
+networks:
+  asistencia-net:

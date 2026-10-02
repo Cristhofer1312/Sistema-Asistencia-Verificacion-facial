@@ -3,6 +3,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     <main className="wrap">
       <h2>Panel administrativo (mock por rol)</h2>
       <div className="nav">
+        <a href="/admin/consulta">Consulta flexible ★</a>
         <a href="/admin/dashboard">Dashboard</a>
         <a href="/admin/empleados">Empleados</a>
         <a href="/admin/empleados/nuevo">Nuevo empleado</a>

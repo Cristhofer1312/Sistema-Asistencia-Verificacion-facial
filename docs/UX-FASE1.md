@@ -1,4 +1,5 @@
 # UX Fase 1 — cobertura (mock, sin backend)
+- /admin/consulta ★ VISTA ÚNICA: buscador + fechas + presets + gerencia + multi-estado + switches (extras/anticipada/sin salida), agrupada por empleado, acordeón en línea, ficha lateral sin perder filtros, Justificar con doc opcional + Previo aviso solo motivo.
 - /kiosco: espera, A TIEMPO/TARDE/TEMPRANO/COMPLETADO+extras, fuera de margen, no registrado 10s, multi 5s, cooldown 30min, jornada cerrada.
 - /login, /cambio-clave.
 - /admin/empleados (tabla + baja/reactivar, nombre clicable), /admin/empleados/nuevo (2 pasos, cámara siempre activa), /admin/empleados/[cedula] (histórico + totales).

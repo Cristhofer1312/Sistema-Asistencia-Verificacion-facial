@@ -6,6 +6,7 @@ export default function Home() {
       <div className="nav">
         <a href="/kiosco">Kiosco</a>
         <a href="/login">Login</a>
+        <a href="/admin/consulta">Consulta flexible ★</a>
         <a href="/admin/dashboard">Dashboard</a>
         <a href="/admin/empleados">Empleados</a>
         <a href="/admin/asistencias">Asistencias</a>

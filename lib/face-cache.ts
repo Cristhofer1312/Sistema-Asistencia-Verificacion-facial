@@ -43,3 +43,9 @@ export function invalidateDescriptorsCache(): void {
   descriptorsCache = null;
   cacheVersion++;
 }
+
+// Solo para testing: reset completo del estado
+export function __resetCacheForTesting(): void {
+  descriptorsCache = null;
+  cacheVersion = 0;
+}

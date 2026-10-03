@@ -237,6 +237,10 @@ enum AccionAuditoria {
   CREAR_JUSTIFICACION_ANTICIPADA
   FALTA_PROYECTADA
   ELIMINAR_USUARIO
+  MATCH_KIOSCO
+  MATCH_KIOSCO_UNKNOWN
+  MATCH_KIOSCO_REPLAY
+  MATCH_KIOSCO_BAD_QUALITY
 }
 
 model LogAuditoria {
@@ -251,4 +255,15 @@ model LogAuditoria {
   @@index([ts])
   @@index([usuarioId])
   @@index([accion])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 11. Nonce Kiosco (anti-replay para match facial)
+// ─────────────────────────────────────────────────────────────
+model KioscoNonce {
+  id        String   @id @default(cuid())
+  nonce     String   @unique
+  usadoEn   DateTime @default(now())
+  expiraEn  DateTime
+  @@index([expiraEn])
 }

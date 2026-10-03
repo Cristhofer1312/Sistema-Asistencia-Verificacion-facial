@@ -141,6 +141,49 @@ export function findBestMatch(
 }
 
 /**
+ * Versión server-side: encuentra el mejor match 1:N usando arrays planos.
+ * No depende de face-api.js, solo de euclideanDistance.
+ */
+export function findBestMatchServer(
+  descriptor: number[], 
+  entries: Array<{ empleadoId: number; descriptor: number[]; [key: string]: any }>,
+  threshold = MATCH_DISTANCE_THRESHOLD,
+  margin = MATCH_AMBIGUITY_MARGIN
+): { entry: any; distance: number } | null {
+  let best: { entry: any; distance: number } | null = null;
+  let secondOther = Infinity;
+
+  for (const entry of entries) {
+    if (!entry.descriptor || entry.descriptor.length !== 128) continue;
+    const dist = euclideanDistanceServer(descriptor, entry.descriptor);
+    if (!best || dist < best.distance) {
+      if (best && best.entry.empleadoId !== entry.empleadoId) {
+        secondOther = Math.min(secondOther, best.distance);
+      }
+      best = { entry, distance: dist };
+    } else if (entry.empleadoId !== best.entry.empleadoId) {
+      secondOther = Math.min(secondOther, dist);
+    }
+  }
+
+  if (!best || best.distance >= threshold) return null;
+  if (secondOther - best.distance < margin) return null; // ambiguo
+  return best;
+}
+
+/**
+ * Distancia euclidiana entre dos arrays de números (server-side).
+ */
+export function euclideanDistanceServer(a: number[], b: number[]): number {
+  let sum = 0;
+  for (let i = 0; i < 128; i++) {
+    const d = a[i] - b[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
+}
+
+/**
  * Calcula Eye Aspect Ratio (EAR) para detectar parpadeo
  * EAR < 0.25 ≈ ojo cerrado
  */

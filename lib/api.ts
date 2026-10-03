@@ -113,6 +113,12 @@ export const api = {
   gerencias: {
     list: () => fetchJson<any[]>("/api/gerencias"),
   },
+
+  // Kiosco
+  kiosco: {
+    match: (data: { descriptor: number[]; quality: any; nonce: string; timestamp: number }) =>
+      fetchJson<{ ok: boolean; tipo: string; msg: string; extrasH?: number; empleadoId?: number; nombre?: string; apellido?: string; cedula?: string; error?: string }>("/api/kiosco/match", { method: "POST", body: JSON.stringify(data) }),
+  },
 };
 
 export type ApiError = { status: number; data: any; message: string };

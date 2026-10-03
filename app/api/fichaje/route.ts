@@ -1,5 +1,5 @@
 // app/api/fichaje/route.ts
-// Endpoint para registrar asistencias desde el Kiosco
+// Endpoint para registrar asistencias desde el Kiosco (interno - solo llamado desde /api/kiosco/match)
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/auditoria";
@@ -10,19 +10,23 @@ function parseTime(timeStr: string): number {
 }
 
 function getVenezuelaDate(): Date {
-  // Venezuela is UTC-4 (no DST)
   const now = new Date();
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
   return new Date(utc - 4 * 3600000);
 }
 
 function toDateOnly(date: Date): Date {
-  // Use UTC to match Prisma @db.Date which stores at 00:00:00 UTC
   return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
 }
 
 export async function POST(req: Request) {
   try {
+    // Solo permite llamadas internas desde /api/kiosco/match
+    const internalHeader = req.headers.get("x-internal-call");
+    if (internalHeader !== "true") {
+      return NextResponse.json({ error: "No autorizado - uso interno únicamente" }, { status: 403 });
+    }
+
     const authHeader = req.headers.get("authorization");
     if (!authHeader || authHeader !== `Bearer ${process.env.API_KIOSCO_KEY}`) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });

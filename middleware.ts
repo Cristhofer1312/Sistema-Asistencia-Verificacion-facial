@@ -44,6 +44,7 @@ export default withAuth(
           pathname === "/" ||
           pathname.startsWith("/kiosco") ||
           pathname.startsWith("/api/fichaje") || // protegida por API Key interna
+          pathname.startsWith("/api/kiosco") || // kiosco endpoints (descriptors, match)
           pathname.startsWith("/api/auth")
         ) return true;
         // El resto requiere sesión

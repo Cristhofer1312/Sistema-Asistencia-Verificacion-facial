@@ -6,6 +6,7 @@ import { bufferToDescriptor } from '@/lib/descriptor-utils';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { z } from 'zod';
+import { invalidateDescriptorsCache } from '@/lib/face-cache';
 
 const enrollSchema = z.object({
   descriptor: z.array(z.number()).length(128),
@@ -72,6 +73,9 @@ export async function POST(
     where: { id: empleadoId },
     data: { descriptor: buffer },
   });
+
+  // Invalidar caché de descriptores para que el kiosco vea el nuevo enrolamiento
+  invalidateDescriptorsCache();
 
   await audit('ENROLLAR_EMPLEADO', `Enrolamiento biométrico: ${empleado.cedula}`, {
     usuarioId: Number(sessionUser.id),

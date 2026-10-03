@@ -5,6 +5,7 @@ import { audit } from "@/lib/auditoria";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { z } from "zod";
+import { invalidateDescriptorsCache } from "@/lib/face-cache";
 
 const updateSchema = z.object({
   nombre: z.string().min(1).max(80).optional(),
@@ -105,6 +106,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     include: { gerencia: true },
   });
 
+  // Invalidar caché si cambia el estado activo (afecta al match del kiosco)
+  if (data.activo !== undefined && data.activo !== wasActivo) {
+    invalidateDescriptorsCache();
+  }
+
   if (data.activo === false && wasActivo) {
     await audit("DESACTIVAR_EMPLEADO", `Empleado dado de baja: ${updated.cedula}`, { usuarioId: Number(sessionUser.id) });
   } else if (data.activo === true && !wasActivo) {
@@ -136,6 +142,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     where: { id: empleadoId },
     data: { activo: false, dadoDeBajaEn: new Date() },
   });
+
+  // Invalidar caché ya que el empleado ya no está activo
+  invalidateDescriptorsCache();
 
   await audit("DESACTIVAR_EMPLEADO", `Empleado dado de baja (DELETE): ${empleado.cedula}`, { usuarioId: Number(sessionUser.id) });
 

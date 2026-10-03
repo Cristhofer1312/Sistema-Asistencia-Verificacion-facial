@@ -1,6 +1,10 @@
-// Esquema Prisma alineado a SRS v3.2 (10 tablas + vista). Completar tipos al cablear Fase 2.
+// schema.prisma — SRS v3.2 completo · 10 tablas + vista
+// Genera: prisma migrate dev --name init
+// Seed:   prisma db seed
+
 generator client {
   provider = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
 }
 
 datasource db {
@@ -8,10 +12,243 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Tablas: gerencias, roles, usuarios, empleados, reglas_asistencia,
-// asistencias, feriados, vacaciones_empleado, pases_previos, logs_auditoria
-// Vista: v_asistencias_diarias (proyecta FALTA / FERIADO / VACACIONES)
+// ─────────────────────────────────────────────────────────────
+// 1. Gerencias
+// ─────────────────────────────────────────────────────────────
 model Gerencia {
-  id     Int    @id @default(autoincrement())
-  nombre String @unique @db.VarChar(100)
+  id       Int       @id @default(autoincrement())
+  nombre   String    @unique @db.VarChar(100)
+  usuarios Usuario[]
+  empleados Empleado[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// 2. Roles
+// ─────────────────────────────────────────────────────────────
+enum Rol {
+  ADMIN
+  RRHH
+  GERENTE
+  COORDINADOR
+}
+
+// ─────────────────────────────────────────────────────────────
+// 3. Usuarios (sistema web — no kiosco)
+// ─────────────────────────────────────────────────────────────
+model Usuario {
+  id               Int       @id @default(autoincrement())
+  username         String    @unique @db.VarChar(60)
+  passwordHash     String    @db.VarChar(72)  // bcrypt ≥12
+  rol              Rol
+  gerenciaId       Int?      // null para ADMIN y RRHH (globales)
+  gerencia         Gerencia? @relation(fields: [gerenciaId], references: [id])
+  claveInicial     Boolean   @default(true)   // obliga cambio en primer login
+  activo           Boolean   @default(true)
+  creadoEn         DateTime  @default(now())
+
+  logsAuditoria    LogAuditoria[]
+
+  @@index([username])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 4. Empleados
+// ─────────────────────────────────────────────────────────────
+model Empleado {
+  id          Int       @id @default(autoincrement())
+  cedula      String    @unique @db.VarChar(20)
+  nombre      String    @db.VarChar(80)
+  apellido    String    @db.VarChar(80)
+  cargo       String    @db.VarChar(100)
+  gerenciaId  Int
+  gerencia    Gerencia  @relation(fields: [gerenciaId], references: [id])
+  descriptor  Bytes?    // 128 Float32 → BYTEA (face-api)
+  activo      Boolean   @default(true)
+  creadoEn    DateTime  @default(now())
+  dadoDeBajaEn DateTime?
+
+  asistencias        Asistencia[]
+  vacaciones         VacacionEmpleado[]
+  pasesPrevios       PasePrevio[]
+  reposos            ReposoMedico[]
+
+  @@index([cedula])
+  @@index([gerenciaId, activo])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 5. Reglas de asistencia (horario global único)
+// ─────────────────────────────────────────────────────────────
+model ReglaAsistencia {
+  id            Int      @id @default(autoincrement())
+  horaLimite    String   @db.VarChar(5)    // "08:00"
+  horaReferencia String  @db.VarChar(5)    // "17:00"
+  margenMin     Int                         // 60 — margen tardanza en minutos
+  cooldownMin   Int      @default(30)       // 30 — cooldown kiosco
+  vigenciaDesde DateTime                    // fecha a partir de la que aplica
+  creadoPorId   Int?
+  creadoEn      DateTime @default(now())
+
+  asistencias   Asistencia[]               // snapshot en cada fichaje
+}
+
+// ─────────────────────────────────────────────────────────────
+// 6. Estados de asistencia
+// ─────────────────────────────────────────────────────────────
+enum EstadoEntrada {
+  A_TIEMPO
+  TARDE
+  FALTA
+  JUSTIFICADO
+  FERIADO
+  VACACIONES
+  REPOSO_MEDICO
+}
+
+enum EstadoSalida {
+  COMPLETADO
+  TEMPRANO
+}
+
+// ─────────────────────────────────────────────────────────────
+// 6. Asistencias (tabla central)
+// ─────────────────────────────────────────────────────────────
+model Asistencia {
+  id              Int           @id @default(autoincrement())
+  empleadoId      Int
+  empleado        Empleado      @relation(fields: [empleadoId], references: [id])
+  fecha           DateTime      @db.Date
+  entrada         DateTime?     @db.Timestamptz
+  salida          DateTime?     @db.Timestamptz
+  estadoEntrada   EstadoEntrada
+  estadoOriginal  EstadoEntrada? // preserva TARDE|FALTA antes de JUSTIFICADO
+  estadoSalida    EstadoSalida?
+  extrasH         Decimal       @default(0) @db.Decimal(6,2)
+  reglaId         Int?          // snapshot del horario usado
+  regla           ReglaAsistencia? @relation(fields: [reglaId], references: [id])
+  justificacionDoc String?      @db.VarChar(500) // URL o descripción
+  justificacionObs String?      @db.Text
+  autorizadorId   Int?          // usuario que justificó / creó pase
+  creadoEn        DateTime      @default(now())
+  actualizadoEn   DateTime      @updatedAt
+
+  // CHECK: salida > entrada, extras ≥ 0
+  // CHECK: solo una asistencia por empleado/fecha
+  @@unique([empleadoId, fecha])
+  @@index([fecha])
+  @@index([empleadoId, fecha])
+  @@index([estadoEntrada])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 7. Feriados
+// ─────────────────────────────────────────────────────────────
+model Feriado {
+  id       Int      @id @default(autoincrement())
+  fecha    DateTime @unique @db.Date
+  motivo   String   @db.VarChar(200)
+  creadoEn DateTime @default(now())
+
+  @@index([fecha])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 8. Vacaciones por empleado
+// ─────────────────────────────────────────────────────────────
+model VacacionEmpleado {
+  id          Int      @id @default(autoincrement())
+  empleadoId  Int
+  empleado    Empleado @relation(fields: [empleadoId], references: [id])
+  inicio      DateTime @db.Date
+  fin         DateTime @db.Date
+  motivo      String?  @db.VarChar(200)
+  aprobadorId Int?
+  creadoEn    DateTime @default(now())
+
+  // Anti-solape: validado en capa de aplicación + CHECK en BD
+  @@index([empleadoId, inicio, fin])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 8b. Reposos médicos por empleado (rango de fechas, no genera falta)
+// ─────────────────────────────────────────────────────────────
+model ReposoMedico {
+  id            Int      @id @default(autoincrement())
+  empleadoId    Int
+  empleado      Empleado @relation(fields: [empleadoId], references: [id])
+  inicio        DateTime @db.Date
+  fin           DateTime @db.Date
+  motivo        String?  @db.VarChar(300)   // diagnóstico / observación (opcional)
+  documento     String?  @db.VarChar(500)   // URL o nombre del archivo del reposo
+  registradoPorId Int?
+  creadoEn      DateTime @default(now())
+
+  @@index([empleadoId, inicio, fin])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 9. Pases previos (habilita entrada fuera de margen) y Justificaciones Anticipadas
+// ─────────────────────────────────────────────────────────────
+enum TipoPase {
+  PASE_NORMAL
+  JUSTIFICACION_ANTICIPADA
+}
+
+model PasePrevio {
+  id          Int      @id @default(autoincrement())
+  empleadoId  Int
+  empleado    Empleado @relation(fields: [empleadoId], references: [id])
+  fecha       DateTime @db.Date       // día para el que aplica
+  tipo        TipoPase @default(PASE_NORMAL) // PASE_NORMAL | JUSTIFICACION_ANTICIPADA
+  motivo      String   @db.VarChar(500)
+  autorizado  Boolean  @default(false) // false = aún no usado; true = consumido
+  autorizadorId Int?
+  creadoEn    DateTime @default(now())
+
+  @@unique([empleadoId, fecha, tipo])
+  @@index([empleadoId, fecha])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 10. Log de auditoría (inmutable — nunca se borra)
+// ─────────────────────────────────────────────────────────────
+enum AccionAuditoria {
+  LOGIN
+  LOGOUT
+  CREAR_USUARIO
+  UPDATE_USUARIO
+  RESET_PASSWORD
+  CREAR_EMPLEADO
+  DESACTIVAR_EMPLEADO
+  REACTIVAR_EMPLEADO
+  ENROLLAR_EMPLEADO
+  FICHAJE_ENTRADA
+  FICHAJE_SALIDA
+  JUSTIFICAR
+  CREAR_PASE
+  CREAR_REGLA
+  CREAR_FERIADO
+  ELIMINAR_FERIADO
+  CREAR_VACACION
+  ELIMINAR_VACACION
+  CREAR_REPOSO
+  ELIMINAR_REPOSO
+  CAMBIO_CLAVE
+  CREAR_JUSTIFICACION_ANTICIPADA
+  FALTA_PROYECTADA
+  ELIMINAR_USUARIO
+}
+
+model LogAuditoria {
+  id          Int              @id @default(autoincrement())
+  accion      AccionAuditoria
+  usuarioId   Int?
+  usuario     Usuario?         @relation(fields: [usuarioId], references: [id])
+  detalle     String           @db.Text
+  ip          String?          @db.VarChar(45)
+  ts          DateTime         @default(now())
+
+  @@index([ts])
+  @@index([usuarioId])
+  @@index([accion])
 }

@@ -7,7 +7,11 @@ services:
       DATABASE_URL: postgresql://asistencia:asistencia@db:5432/asistencia
       API_KIOSCO_KEY: ${API_KIOSCO_KEY:-kiosco-local-key}
       GUARDAR_FOTO_FICHAJE: ${GUARDAR_FOTO_FICHAJE:-false}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-cambia-este-secreto}
       TZ: America/Caracas
+    env_file:
+      - .env
     depends_on:
       - db
     networks:
@@ -19,6 +23,8 @@ services:
       POSTGRES_PASSWORD: asistencia
       POSTGRES_DB: asistencia
       TZ: America/Caracas
+    ports:
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backups:/backups
@@ -27,9 +33,11 @@ services:
   proxy:
     image: nginx:1.27-alpine
     ports:
+      - "80:80"
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - app
     networks:

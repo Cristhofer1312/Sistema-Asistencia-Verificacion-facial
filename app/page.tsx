@@ -1,72 +1,169 @@
 "use client";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { signIn, useSession } from "next-auth/react";
+import { useRouter, useSearchParams } from "next/navigation";
 
-export default function Home() {
+export default function Login() {
   return (
-    <main style={{ minHeight: "100vh", background: "linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 24px" }}>
-      {/* Hero */}
-      <div style={{ textAlign: "center", marginBottom: 48, maxWidth: 600 }}>
-        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 72, height: 72, background: "#2563eb", borderRadius: 18, fontSize: "2rem", marginBottom: 24, boxShadow: "0 8px 32px rgba(37,99,235,.4)" }}>
-          🎯
+    <Suspense fallback={<main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>Cargando…</main>}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const { data: session, status } = useSession();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPwd, setShowPwd] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const callbackUrl = params.get("callbackUrl") || "/admin/dashboard";
+
+  // Si ya hay sesión, redirigir según claveInicial
+  useEffect(() => {
+    if (status === "authenticated") {
+      const claveInicial = (session?.user as any)?.claveInicial;
+      router.replace(claveInicial ? "/cambio-clave" : callbackUrl);
+    }
+  }, [status, session, router, callbackUrl]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!username.trim() || !password) {
+      setError("Ingrese usuario y contraseña.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await signIn("credentials", {
+        username: username.trim(),
+        password,
+        redirect: false,
+      });
+      if (!res || res.error) {
+        setError("Credenciales inválidas o usuario inactivo.");
+        return;
+      }
+      // Refrescar sesión del servidor y redirigir según claveInicial
+      router.refresh();
+      // Pequeña espera para que la cookie se propague, luego ir al destino.
+      // El middleware redirigirá a /cambio-clave si claveInicial=true.
+      router.push(callbackUrl);
+      router.refresh();
+    } catch {
+      setError("Error de conexión. Intente de nuevo.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "24px",
+      fontFamily: "'Inter', system-ui, sans-serif",
+    }}>
+      <div style={{ width: "100%", maxWidth: 420 }}>
+        {/* Logo */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 56, height: 56, background: "#2563eb", borderRadius: 14, fontSize: "1.5rem", marginBottom: 16, boxShadow: "0 8px 24px rgba(37,99,235,.4)" }}>
+            
+          </div>
+          <h1 style={{ color: "#f8fafc", fontSize: "1.5rem", fontWeight: 800, letterSpacing: "-.03em", marginBottom: 6 }}>
+            Ingreso al panel
+          </h1>
+          <p style={{ color: "#64748b", fontSize: ".875rem" }}>
+            Control de Asistencias — Fase 1 UX
+          </p>
         </div>
-        <h1 style={{ color: "#f8fafc", fontSize: "2.4rem", fontWeight: 800, letterSpacing: "-.04em", lineHeight: 1.2, marginBottom: 14, fontFamily: "'Inter', system-ui, sans-serif" }}>
-          Control de Asistencias<br />
-          <span style={{ background: "linear-gradient(90deg,#60a5fa,#34d399)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-            con Reconocimiento Facial
-          </span>
-        </h1>
-        <p style={{ color: "#94a3b8", fontSize: "1rem", lineHeight: 1.7, fontFamily: "'Inter', system-ui, sans-serif" }}>
-          Maqueta navegable — Fase 1 UX · SRS v3.2<br />
-          Toda la lógica es mock local. Los controladores se integran en Fase 2.
-        </p>
-      </div>
 
-      {/* Cards de acceso */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, width: "100%", maxWidth: 680, marginBottom: 36 }}>
-        <Link href="/kiosco" style={{ background: "rgba(255,255,255,.07)", border: "1.5px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "24px 22px", textDecoration: "none", display: "flex", flexDirection: "column", gap: 10, transition: "background .2s, transform .2s", color: "#f1f5f9", fontFamily: "'Inter', system-ui, sans-serif" }}
-          onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = "rgba(37,99,235,.18)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(96,165,250,.4)"; }}
-          onMouseOut={e  => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,.07)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,.12)"; }}>
-          <span style={{ fontSize: "1.8rem" }}>📷</span>
-          <span style={{ fontSize: "1rem", fontWeight: 700 }}>Kiosco</span>
-          <span style={{ fontSize: ".8125rem", color: "#64748b" }}>Fichaje facial en tiempo real</span>
-        </Link>
-
-        <Link href="/login" style={{ background: "rgba(255,255,255,.07)", border: "1.5px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "24px 22px", textDecoration: "none", display: "flex", flexDirection: "column", gap: 10, transition: "background .2s", color: "#f1f5f9", fontFamily: "'Inter', system-ui, sans-serif" }}
-          onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = "rgba(37,99,235,.18)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(96,165,250,.4)"; }}
-          onMouseOut={e  => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,.07)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,.12)"; }}>
-          <span style={{ fontSize: "1.8rem" }}>🔐</span>
-          <span style={{ fontSize: "1rem", fontWeight: 700 }}>Ingreso</span>
-          <span style={{ fontSize: ".8125rem", color: "#64748b" }}>Panel administrativo</span>
-        </Link>
-
-        <Link href="/admin/dashboard" style={{ background: "linear-gradient(135deg, rgba(37,99,235,.3), rgba(37,99,235,.1))", border: "1.5px solid rgba(96,165,250,.35)", borderRadius: 16, padding: "24px 22px", textDecoration: "none", display: "flex", flexDirection: "column", gap: 10, transition: "background .2s", color: "#f1f5f9", fontFamily: "'Inter', system-ui, sans-serif" }}
-          onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = "linear-gradient(135deg, rgba(37,99,235,.45), rgba(37,99,235,.2))"; }}
-          onMouseOut={e  => { (e.currentTarget as HTMLElement).style.background = "linear-gradient(135deg, rgba(37,99,235,.3), rgba(37,99,235,.1))"; }}>
-          <span style={{ fontSize: "1.8rem" }}>📊</span>
-          <span style={{ fontSize: "1rem", fontWeight: 700 }}>Admin (mock)</span>
-          <span style={{ fontSize: ".8125rem", color: "#93c5fd" }}>Acceso directo sin login</span>
-        </Link>
-      </div>
-
-      {/* Regla vigente */}
-      <div style={{ background: "rgba(255,255,255,.06)", border: "1.5px solid rgba(255,255,255,.1)", borderRadius: 14, padding: "18px 24px", maxWidth: 520, width: "100%", fontFamily: "'Inter', system-ui, sans-serif" }}>
-        <p style={{ fontSize: ".72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "#475569", marginBottom: 10 }}>Regla vigente (mock)</p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 18px" }}>
-          {[
-            ["Entrada límite", "08:00"],
-            ["Salida ref.", "17:00"],
-            ["Margen tardanza", "60 min"],
-            ["Cooldown kiosco", "30 min"],
-          ].map(([k, v]) => (
-            <div key={k} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-              <span style={{ fontSize: ".8rem", color: "#64748b" }}>{k}</span>
-              <span style={{ fontSize: ".95rem", fontWeight: 700, color: "#e2e8f0" }}>{v}</span>
+        {/* Card */}
+        <form onSubmit={onSubmit} style={{ background: "rgba(255,255,255,.97)", borderRadius: 20, padding: "32px 28px", boxShadow: "0 24px 80px rgba(0,0,0,.3)" }}>
+          {params.get("cambiada") === "1" && (
+            <div className="alert" style={{ marginBottom: 16, background: "#ecfdf5", border: "1px solid #a7f3d0", color: "#065f46", borderRadius: 10, padding: "10px 12px", fontSize: ".85rem" }}>
+              Clave actualizada. Ingrese con su nueva contraseña.
             </div>
-          ))}
+          )}
+          {error && (
+            <div className="alert alert-warn" role="alert" style={{ marginBottom: 16 }}>
+              <span></span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="form-group" style={{ marginBottom: 18 }}>
+            <label htmlFor="login-user">Usuario</label>
+            <input
+              id="login-user"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="gerente.ventas, rrhh, admin…"
+              autoComplete="username"
+              disabled={loading}
+            />
+            <p className="muted" style={{ marginTop: 4 }}>
+              Cuentas: gerente/coordinador por gerencia, RRHH, admin
+            </p>
+          </div>
+
+          <div className="form-group" style={{ marginBottom: 24 }}>
+            <label htmlFor="login-pwd">Contraseña</label>
+            <div style={{ position: "relative" }}>
+              <input
+                id="login-pwd"
+                type={showPwd ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                style={{ paddingRight: 44 }}
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPwd(s => !s)}
+                style={{
+                  position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", fontSize: "1rem",
+                  color: "#94a3b8", padding: "4px",
+                  boxShadow: "none",
+                }}
+              >
+                {showPwd ? "" : ""}
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" className="btn btn-primary" disabled={loading} style={{ width: "100%", padding: "11px", fontSize: ".9375rem", borderRadius: 10, marginBottom: 12 }}>
+            {loading ? "Verificando…" : "Ingresar"}
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "16px 0", color: "#94a3b8", fontSize: ".8rem" }}>
+            <hr style={{ flex: 1, border: "none", borderTop: "1px solid #e2e8f4" }} />
+            o
+            <hr style={{ flex: 1, border: "none", borderTop: "1px solid #e2e8f4" }} />
+          </div>
+
+          <Link href="/cambio-clave" className="btn" style={{ width: "100%", padding: "10px", fontSize: ".875rem", borderRadius: 10, justifyContent: "center" }}>
+             Primera vez / cambio de clave
+          </Link>
+
+          <p className="muted" style={{ textAlign: "center", marginTop: 20, fontSize: ".78rem" }}>
+            Si requiere cambio de clave, redirige automáticamente.
+          </p>
+        </form>
+
+        <div style={{ textAlign: "center", marginTop: 20 }}>
+          <Link href="/kiosco" style={{ color: "#94a3b8", fontSize: ".875rem", textDecoration: "none", fontWeight: 500, padding: "8px 16px", borderRadius: 8, background: "rgba(255,255,255,0.05)" }}>Ir al Kiosco de Asistencia</Link>
         </div>
-        <p style={{ fontSize: ".78rem", color: "#475569", marginTop: 10 }}>
-          Fuera de margen sin pase previo → FALTA. Con pase de Gerente/RRHH → JUSTIFICADO.
-        </p>
       </div>
     </main>
   );

@@ -1,11 +1,21 @@
+import type { Metadata } from "next";
 import "./globals.css";
+import Providers from "./providers";
 
-export const metadata = { title: "Asistencia Facial — Fase 1 UX", description: "Maqueta UX sin backend (SRS v3.2)" };
+export const metadata: Metadata = {
+  title: "AsistenciaFace — Control de Asistencias Facial",
+  description: "Sistema de control de asistencias con reconocimiento facial — Fase 1 UX (SRS v3.2)",
+};
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="es">
-      <body>{children}</body>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+      </head>
+      <body><Providers>{children}</Providers></body>
     </html>
   );
 }

@@ -25,8 +25,20 @@ interface LivenessQualityData {
   move: boolean;
 }
 
+interface MatchResult {
+  ok: boolean;
+  tipo: string;
+  msg: string;
+  extrasH?: number;
+  empleadoId: number | undefined;
+  nombre: string | undefined;
+  apellido: string | undefined;
+  cedula: string | undefined;
+  error?: string;
+}
+
 interface FaceIdentifyProps {
-  onMatch: (empleado: { empleadoId: number; nombre: string; apellido: string; cedula: string }) => void;
+  onMatch: (result: MatchResult) => void;
   onMultiFace: () => void;
   onUnknown: () => void;
   onCooldown: (minutos: number) => void;
@@ -37,7 +49,7 @@ interface FaceIdentifyProps {
 
 const LIVENESS_EAR_THRESHOLD = 0.25;
 const LIVENESS_POSE_THRESHOLD = 20;
-const MIN_BLINK_FRAMES = 2;
+const MIN_BLINK_FRAMES = 1;
 const INFERENCE_INTERVAL_MS = 1000;
 
 type IdentifyState = 
@@ -208,7 +220,7 @@ export function FaceIdentify({
           setState('matching');
         }
 
-        if (state === 'matching' && !matchingRef.current) {
+        if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
           matchingRef.current = true;
           try {
             const descriptor = Array.from(det.descriptor as Float32Array);
@@ -229,12 +241,7 @@ export function FaceIdentify({
               const preview = generateFacePreview(video, det.detection.box);
               setPreviewCanvas(preview);
               
-              onMatch({
-                empleadoId: result.empleadoId ?? 0,
-                nombre: result.nombre ?? '',
-                apellido: result.apellido ?? '',
-                cedula: result.cedula ?? '',
-              });
+              onMatch(result as MatchResult);
               
               setTimeout(() => {
                 if (stateRef.current === 'success') {

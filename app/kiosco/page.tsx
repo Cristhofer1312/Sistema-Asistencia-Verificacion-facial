@@ -87,31 +87,33 @@ export default function Kiosco() {
       .catch(() => {});
   }, []);
 
-  const handleMatch = async (empleado: { empleadoId: number; nombre: string; apellido: string; cedula: string }) => {
+  const handleMatch = async (data: { 
+    ok: boolean; 
+    tipo: string; 
+    msg: string; 
+    extrasH?: number;
+    empleadoId: number | undefined;
+    nombre: string | undefined;
+    apellido: string | undefined;
+    cedula: string | undefined;
+    error?: string;
+  }) => {
     try {
-      const res = await fetch("/api/fichaje", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_KIOSCO_KEY}`,
-        },
-        body: JSON.stringify({ empleadoId: empleado.empleadoId }),
-      });
-      const data = await res.json();
-      
-      if (res.ok) {
-        const isEntrada = data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones" || data.tipo === "reposo_medico";
-        setLastResult({
-          tipo: isEntrada ? "entrada" : "salida",
-          estado: data.msg?.split("—")[1]?.trim() || data.msg || data.tipo,
-          nombre: `${empleado.nombre} ${empleado.apellido}`,
-          extras: data.extrasH,
-          previewCanvas: previewCanvasRef.current,
-        });
-        setTimeout(() => setLastResult(null), 3000);
-      } else {
-        handleApiError(data, res.status, empleado);
+      if (!data.ok || data.error) {
+        handleApiError(data, data.tipo === 'cooldown' ? 429 : data.tipo === 'duplicado' ? 400 : 404, { nombre: data.nombre ?? '', apellido: data.apellido ?? '' });
+        return;
       }
+
+      // El match endpoint ya hizo el fichaje; usar su respuesta directamente
+      const isEntrada = data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones" || data.tipo === "reposo_medico";
+      setLastResult({
+        tipo: isEntrada ? "entrada" : "salida",
+        estado: data.msg,
+        nombre: `${data.nombre} ${data.apellido}`,
+        extras: data.extrasH,
+        previewCanvas: previewCanvasRef.current,
+      });
+      setTimeout(() => setLastResult(null), 3000);
     } catch (e) {
       setError("Error de conexión con el servidor");
     }

@@ -278,7 +278,14 @@ export async function POST(req: Request) {
 
       await audit("MATCH_KIOSCO", `Match exitoso: ${match.entry.nombre} ${match.entry.apellido} (${match.entry.cedula}) dist=${match.distance.toFixed(4)}`);
 
-      return NextResponse.json({ ok: true, ...result });
+      return NextResponse.json({ 
+        ok: true, 
+        ...result,
+        empleadoId: match.entry.empleadoId,
+        nombre: match.entry.nombre,
+        apellido: match.entry.apellido,
+        cedula: match.entry.cedula,
+      });
     } catch (e: any) {
       const msg = e.message ?? String(e);
       if (msg.startsWith("COOLDOWN:")) {

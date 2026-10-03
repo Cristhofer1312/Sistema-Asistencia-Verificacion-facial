@@ -204,7 +204,6 @@ export default function Vacaciones() {
                     </td>
                     <td className="mono" style={{ fontWeight: 600 }}>
                       {formatFriendlyDate(v.inicio)} → {formatFriendlyDate(v.fin)}
-                      <div className="badge b-vac" style={{ display: "inline-flex", marginTop: 4, fontSize: ".65rem" }}>VACACIONES</div>
                     </td>
                     <td className="muted">{v.motivo || "—"}</td>
                     <td className="muted mono">User {v.aprobadorId ?? "—"}</td>

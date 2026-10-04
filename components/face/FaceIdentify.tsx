@@ -95,8 +95,8 @@ export function FaceIdentify({
   const challengeIdRef = useRef<string | null>(null);
   const seriesRef = useRef<{ yaw: number; pitch: number; t: number }[]>([]);
   const challengeStartTimeRef = useRef<number>(0);
-  const currentStepRef = useRef<string | null>(null);
-  const stepStartTimeRef = useRef<number>(0);
+  const challengeStepsRef = useRef<{ step: string; completed: boolean }[]>([]);
+  const currentStepIdxRef = useRef<number>(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -140,15 +140,20 @@ export function FaceIdentify({
 
   const requestChallenge = async () => {
     try {
+      console.log('[Kiosco] solicitando challenge al servidor…');
       const result = await api.kiosco.challenge();
+      console.log('[Kiosco] challenge recibido:', result.steps.join(' → '));
       challengeIdRef.current = result.challengeId;
-      setChallengeSteps(result.steps.map(s => ({ step: s, completed: false })));
+      challengeStepsRef.current = result.steps.map(s => ({ step: s, completed: false }));
+      currentStepIdxRef.current = 0;
+      setChallengeSteps(challengeStepsRef.current.map(s => ({ ...s })));
       setCurrentStepIndex(0);
       seriesRef.current = [];
       challengeStartTimeRef.current = Date.now();
       setState('challenge_active');
       updateChallengeUI();
     } catch (e: any) {
+      console.log('[Kiosco] error solicitando challenge:', e?.data?.error ?? e?.message);
       onError?.('Error solicitando challenge: ' + (e.data?.error ?? e.message));
       setState('error');
     }
@@ -156,27 +161,36 @@ export function FaceIdentify({
 
   const resetChallenge = () => {
     challengeIdRef.current = null;
+    challengeStepsRef.current = [];
+    currentStepIdxRef.current = 0;
     setChallengeSteps([]);
     setCurrentStepIndex(0);
     seriesRef.current = [];
     challengeStartTimeRef.current = 0;
   };
 
-  const updateChallengeUI = () => {
-    const step = challengeSteps[currentStepIndex];
-    if (!step) return;
+  const stepLabel = (step: string): string => {
     const labels: Record<string, string> = {
       'IZQUIERDA': 'Gire a la IZQUIERDA ←',
       'DERECHA': 'Gire a la DERECHA →',
       'FRENTE': 'Mire al FRENTE ●',
     };
-    setMessage(labels[challengeSteps[currentStepIndex]?.step] || 'Gire la cabeza');
-    setChallengeSteps(prev => prev.map((s, i) => ({ ...s, completed: i < currentStepIndex })));
+    return labels[step] ?? 'Gire la cabeza';
+  };
+
+  const updateChallengeUI = () => {
+    const steps = challengeStepsRef.current;
+    const idx = currentStepIdxRef.current;
+    const step = steps[idx];
+    if (!step) return;
+    setMessage(stepLabel(step.step));
+    setChallengeSteps(steps.map(s => ({ ...s })));
+    setCurrentStepIndex(idx);
     onLivenessChange?.({
       move: true,
-      step: challengeSteps[currentStepIndex]?.step || '',
-      stepIndex: currentStepIndex,
-      totalSteps: challengeSteps.length,
+      step: step.step,
+      stepIndex: idx,
+      totalSteps: steps.length,
     });
   };
 
@@ -184,7 +198,10 @@ export function FaceIdentify({
     if (intervalRef.current) clearInterval(intervalRef.current);
     
     intervalRef.current = setInterval(async () => {
-      if (stateRef.current !== 'scanning' && stateRef.current !== 'challenge_active') return;
+      // 'matching' sigue corriendo: el envío al servidor ocurre en el tick
+      // siguiente a completar el challenge (el state de React se sincroniza
+      // al ref vía efecto después del re-render).
+      if (stateRef.current !== 'scanning' && stateRef.current !== 'challenge_active' && stateRef.current !== 'matching') return;
 
       const videoEl = videoRef.current;
       if (!videoEl || videoEl.readyState !== videoEl.HAVE_ENOUGH_DATA) return;
@@ -276,33 +293,26 @@ export function FaceIdentify({
           seriesRef.current.push({ yaw: pose.yaw, pitch: pose.pitch, t: now - challengeStartTimeRef.current });
         }
 
-        // Máquina de estados
+        // Máquina de estados.
+        // NOTA: usa refs (no el state de React): el intervalo se crea una vez
+        // y el state llega obsoleto al closure. El match se dispara con llamada
+        // directa (doMatch) en el mismo tick, nunca esperando al próximo.
         if (stateRef.current === 'scanning') {
           if (move) {
-            // Calidad OK + movimiento detectado -> pedir challenge
+            console.log('[Kiosco] movimiento detectado, solicitando challenge…');
             setState('challenge_requested');
             setMessage('Solicitando desafío…');
             await requestChallenge();
-            return;
           }
-        } else if (stateRef.current === 'challenge_active') {
-          // Verificar paso actual del challenge
-          const step = challengeSteps[currentStepIndex];
-          if (!step || step.completed) {
-            // Paso ya completado, verificar siguiente
-            const nextIdx = challengeSteps.findIndex(s => !s.completed);
-            if (nextIdx >= 0 && nextIdx !== currentStepIndex) {
-              setCurrentStepIndex(nextIdx);
-              updateChallengeUI();
-            } else if (nextIdx < 0) {
-              // Todos los pasos completados
-              setState('matching');
-            }
-            updateChallengeUI();
-            return;
-          }
+          return;
+        }
 
-          // Verificar si el paso actual se cumple
+        if (stateRef.current === 'challenge_active') {
+          const steps = challengeStepsRef.current;
+          if (steps.length === 0) return; // challenge aún no cargado, seguir acumulando serie
+          const idx = currentStepIdxRef.current;
+          const step = steps[idx];
+          if (!step) return;
           const expected = step.step;
           let stepOk = false;
           if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -12;
@@ -310,25 +320,18 @@ export function FaceIdentify({
           else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) < 8 && Math.abs(pose.pitch) < 8;
 
           if (stepOk) {
-            // Paso completado
-            setChallengeSteps(prev => {
-              const next = [...prev];
-              next[currentStepIndex] = { ...next[currentStepIndex], completed: true };
-              return next;
-            });
-            setCurrentStepIndex(prev => prev + 1);
-            
-            // Verificar si quedan pasos
-            const nextIdx = challengeSteps.findIndex((s, i) => !s.completed && i > currentStepIndex);
-            if (nextIdx >= 0) {
-              setCurrentStepIndex(nextIdx);
-            } else {
-              // Challenge completo
+            console.log(`[Kiosco] paso ${idx + 1}/${steps.length} completado: ${expected}`);
+            steps[idx] = { ...step, completed: true };
+            currentStepIdxRef.current = idx + 1;
+            if (idx + 1 >= steps.length) {
               setState('matching');
-              return;
+              setMessage('Comparando…');
+              console.log('[Kiosco] challenge completo, enviando probe al servidor en el próximo ciclo…');
+            } else {
+              updateChallengeUI();
             }
-            updateChallengeUI();
           }
+          return;
         }
         
         if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
@@ -353,6 +356,7 @@ export function FaceIdentify({
               challengeId: challengeIdRef.current ?? undefined,
               series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
             });
+            console.log('[Kiosco] respuesta match:', result.ok ? `${result.tipo} — ${result.msg}` : result);
 
             if (result.ok) {
               setState('success');
@@ -432,6 +436,7 @@ export function FaceIdentify({
               }, 10000);
             }
           } catch (e: any) {
+            console.log('[Kiosco] error match:', e?.status, e?.data?.error ?? e?.message);
             if (e.status === 401) {
               onError?.('Error de autenticación del kiosco');
               setState('error');

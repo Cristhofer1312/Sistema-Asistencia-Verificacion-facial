@@ -117,7 +117,7 @@ export const api = {
   // Kiosco
   kiosco: {
     challenge: () => fetchJson<{ challengeId: string; steps: string[]; expiresAt: string }>("/api/kiosco/challenge"),
-    match: (data: { descriptor: number[]; quality: any; nonce: string; timestamp: number; challengeId: string; series: { yaw: number; pitch: number; t: number }[] }) =>
+    match: (data: { descriptor: number[]; quality: any; nonce: string; timestamp: number; challengeId?: string; series?: { yaw: number; pitch: number; t: number }[] }) =>
       fetchJson<{ ok: boolean; tipo: string; msg: string; extrasH?: number; empleadoId?: number; nombre?: string; apellido?: string; cedula?: string; error?: string }>("/api/kiosco/match", { method: "POST", body: JSON.stringify(data) }),
   },
 };

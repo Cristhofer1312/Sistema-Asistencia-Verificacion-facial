@@ -64,6 +64,8 @@ const INFERENCE_INTERVAL_MS = 1000;
 // FRENTE usa ±14° (ver abajo). La seguridad la da la secuencia ordenada.
 const YAW_THRESHOLD = 10;
 const PITCH_THRESHOLD = 12;
+// Watchdog: si no hay progreso en el escaneo por más de este tiempo, se reinicia.
+const WATCHDOG_MS = 10000;
 
 type IdentifyState = 
   | 'loading_models' 
@@ -92,8 +94,11 @@ export function FaceIdentify({
   
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const watchdogRef = useRef<NodeJS.Timeout | null>(null);
   const stateRef = useRef<IdentifyState>('loading_models');
   const matchingRef = useRef(false);
+  const lastProgressRef = useRef<number>(Date.now());
+  const attemptIdRef = useRef<number>(0);
   const challengeIdRef = useRef<string | null>(null);
   const seriesRef = useRef<{ yaw: number; pitch: number; t: number }[]>([]);
   const challengeStartTimeRef = useRef<number>(0);
@@ -133,7 +138,9 @@ export function FaceIdentify({
       streamRef.current = stream;
       setState('scanning');
       setMessage('Escaneando… presente su rostro');
+      markProgress();
       startInferenceLoop();
+      startWatchdog();
     } catch {
       onError?.('No se pudo acceder a la cámara');
       setState('error');
@@ -141,10 +148,17 @@ export function FaceIdentify({
   };
 
   const requestChallenge = async () => {
+    markProgress();
+    const myAttempt = attemptIdRef.current;
     try {
       console.log('[Kiosco] solicitando challenge al servidor…');
       const result = await api.kiosco.challenge();
+      if (attemptIdRef.current !== myAttempt) {
+        console.log('[Kiosco] challenge descartado (reinicio por watchdog)');
+        return;
+      }
       console.log('[Kiosco] challenge recibido:', result.steps.join(' → '));
+      markProgress();
       challengeIdRef.current = result.challengeId;
       challengeStepsRef.current = result.steps.map(s => ({ step: s, completed: false }));
       currentStepIdxRef.current = 0;
@@ -169,6 +183,33 @@ export function FaceIdentify({
     setCurrentStepIndex(0);
     seriesRef.current = [];
     challengeStartTimeRef.current = 0;
+  };
+
+  // Marca progreso: cualquier avance real (challenge recibido, paso cumplido,
+  // probe enviado/respondido) reinicia la ventana del watchdog.
+  const markProgress = () => {
+    lastProgressRef.current = Date.now();
+  };
+
+  // Reinicio por watchdog: invalida respuestas en vuelo con attemptId para que
+  // un match tardío no fiche después del reinicio.
+  const watchdogReset = () => {
+    attemptIdRef.current += 1;
+    matchingRef.current = false;
+    resetChallenge();
+    setState('scanning');
+    setMessage('Escaneando… presente su rostro');
+    markProgress();
+    console.log('[Kiosco] watchdog: 10s sin progreso, escaneo reiniciado');
+  };
+
+  const startWatchdog = () => {
+    if (watchdogRef.current) clearInterval(watchdogRef.current);
+    watchdogRef.current = setInterval(() => {
+      const s = stateRef.current;
+      if (s !== 'challenge_requested' && s !== 'challenge_active' && s !== 'matching') return;
+      if (Date.now() - lastProgressRef.current > WATCHDOG_MS) watchdogReset();
+    }, 1000);
   };
 
   const stepLabel = (step: string): string => {
@@ -327,6 +368,7 @@ export function FaceIdentify({
 
           if (stepOk) {
             console.log(`[Kiosco] paso ${idx + 1}/${steps.length} completado: ${expected}`);
+            markProgress();
             steps[idx] = { ...step, completed: true };
             currentStepIdxRef.current = idx + 1;
             if (idx + 1 >= steps.length) {
@@ -342,6 +384,9 @@ export function FaceIdentify({
         
         if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
           matchingRef.current = true;
+          const myAttempt = attemptIdRef.current;
+          markProgress();
+          console.log('[Kiosco] enviando probe al servidor…');
           try {
             const descriptor = Array.from(det.descriptor as Float32Array);
             const quality = {
@@ -363,6 +408,12 @@ export function FaceIdentify({
               series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
             });
             console.log('[Kiosco] respuesta match:', result.ok ? `${result.tipo} — ${result.msg}` : result);
+            if (attemptIdRef.current !== myAttempt) {
+              console.log('[Kiosco] respuesta descartada (reinicio por watchdog)');
+              matchingRef.current = false;
+              return;
+            }
+            markProgress();
 
             if (result.ok) {
               setState('success');
@@ -443,6 +494,12 @@ export function FaceIdentify({
             }
           } catch (e: any) {
             console.log('[Kiosco] error match:', e?.status, e?.data?.error ?? e?.message);
+            if (attemptIdRef.current !== myAttempt) {
+              console.log('[Kiosco] error descartado (reinicio por watchdog)');
+              matchingRef.current = false;
+              return;
+            }
+            markProgress();
             if (e.status === 401) {
               onError?.('Error de autenticación del kiosco');
               setState('error');
@@ -512,6 +569,7 @@ export function FaceIdentify({
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (watchdogRef.current) clearInterval(watchdogRef.current);
       streamRef.current?.getTracks().forEach(t => t.stop());
     };
   }, []);

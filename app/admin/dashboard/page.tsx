@@ -77,6 +77,23 @@ export default function Dashboard() {
   const [openGerencia, setOpenGerencia] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [cerrando, setCerrando] = useState(false);
+  const [cierreMsg, setCierreMsg] = useState<string | null>(null);
+
+  async function handleCerrarDia() {
+    if (!confirm("¿Cerrar el día de ayer? Se marcará como faltante a quienes no ficharon (respetando feriados, vacaciones y reposos).")) return;
+    setCerrando(true);
+    setCierreMsg(null);
+    try {
+      const r = await api.cierreDia();
+      setCierreMsg(`Cierre ${r.fecha}: ${r.faltas} falta(s), ${r.feriados} feriado(s), ${r.vacaciones} vacación(es), ${r.reposos} reposo(s), ${r.omitidos} omitido(s).`);
+      await cargarDatos();
+    } catch (e: any) {
+      setCierreMsg(e.data?.error || e.message || "Error en cierre diario");
+    } finally {
+      setCerrando(false);
+    }
+  }
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -313,9 +330,25 @@ export default function Dashboard() {
             ))}
           </div>
           <a href="/admin/consulta" className="btn btn-sm" style={{ gap: 6 }}> Consulta</a>
+          {isAdminRrhh && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleCerrarDia}
+              disabled={cerrando}
+              title="Debug: marca como faltantes a quienes no ficharon ayer"
+            >
+              {cerrando ? "Cerrando…" : "Cerrar día"}
+            </button>
+          )}
           <a href="/kiosco" className="btn btn-primary btn-sm"> Kiosco</a>
         </div>
       </div>
+      {cierreMsg && (
+        <div className="card" style={{ marginBottom: 16, padding: "12px 16px" }}>
+          <span style={{ fontSize: ".8125rem" }}>{cierreMsg}</span>
+        </div>
+      )}
 
       {/* ── KPI grid ── */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}>

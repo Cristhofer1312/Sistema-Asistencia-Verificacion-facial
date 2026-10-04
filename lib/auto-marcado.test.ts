@@ -1,6 +1,6 @@
 // lib/auto-marcado.test.ts — Unit tests de marcado automático y reversión
 import { describe, it, expect, beforeEach } from 'vitest';
-import { diasHabiles, autoMarkRange, autoMarkFeriado, revertRange, solapeConOtroPermiso } from './auto-marcado';
+import { diasHabiles, autoMarkRange, autoMarkFeriado, revertRange, solapeConOtroPermiso, marcarFaltantes } from './auto-marcado';
 
 const D = (s: string) => new Date(s + "T00:00:00Z");
 
@@ -70,7 +70,11 @@ function memoriaDb(seed: { asistencias?: Row[]; feriados?: string[]; vacaciones?
         reposos.filter(r => r.empleadoId === (a.where as { empleadoId: number }).empleadoId),
     },
     empleado: {
-      findMany: async () => [{ id: 1 }, { id: 2 }],
+      // Por defecto: 2 activos creados hace tiempo (cota anti-infinito superada)
+      findMany: async () => [
+        { id: 1, creadoEn: D("2020-01-01"), activo: true },
+        { id: 2, creadoEn: D("2020-01-01"), activo: true },
+      ],
     },
   };
 }
@@ -175,6 +179,78 @@ describe('auto-marcado', () => {
       const r = await revertRange(db as never, { empleadoId: 1, estado: "VACACIONES", inicio: D("2026-06-16"), fin: D("2026-06-16") });
       expect(r.revertidas).toBe(1);
       expect(db._rows[0].estadoEntrada).toBe("REPOSO_MEDICO");
+    });
+  });
+
+  describe('marcarFaltantes (cierre diario)', () => {
+    // Ayer relativo: se calcula dinámicamente para no depender de "hoy"
+    const ayerHabil = (() => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      do { d.setDate(d.getDate() - 1); } while (d.getDay() < 1 || d.getDay() > 5);
+      return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    })();
+    const isoAyer = ayerHabil.toISOString().slice(0, 10);
+
+    it('marca FALTA a activos sin fila', async () => {
+      const db = memoriaDb();
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      expect(r.fecha).toBe(isoAyer);
+      expect(r.faltas).toBe(2);
+      expect(db._rows.every(x => x.estadoEntrada === "FALTA" && x.entrada === null)).toBe(true);
+    });
+
+    it('feriado → FERIADO; vacación/reposo → su estado; con fila → intacto', async () => {
+      const db = memoriaDb({
+        feriados: [isoAyer],
+        vacaciones: [{ id: 1, empleadoId: 1, inicio: ayerHabil, fin: ayerHabil }],
+        asistencias: [
+          { id: 0, empleadoId: 2, fecha: ayerHabil, estadoEntrada: "A_TIEMPO", entrada: ayerHabil },
+        ],
+      });
+      // empleado 1 tiene vacación (aunque sea feriado, lo individual manda en revert... aquí marca directo)
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      // emp1: feriado=true pero tiene vacación → VACACIONES; emp2: tiene fila → omitido
+      expect(r.vacaciones).toBe(1);
+      expect(r.feriados).toBe(0);
+      expect(r.omitidos).toBe(1);
+    });
+
+    it('día feriado sin permisos → FERIADO a todos sin fila', async () => {
+      const db = memoriaDb({ feriados: [isoAyer] });
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      expect(r.feriados).toBe(2);
+      expect(r.faltas).toBe(0);
+    });
+
+    it('rechaza hoy y futuro', async () => {
+      const db = memoriaDb();
+      const hoyStr = new Date().toISOString().slice(0, 10);
+      await expect(marcarFaltantes(db as never, { fecha: hoyStr })).rejects.toThrow(/pasados/);
+      const manana = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      await expect(marcarFaltantes(db as never, { fecha: manana })).rejects.toThrow(/pasados/);
+    });
+
+    it('fin de semana → nada (sin error)', async () => {
+      const db = memoriaDb();
+      // sábado más reciente
+      const sab = new Date(); sab.setHours(0, 0, 0, 0);
+      while (sab.getDay() !== 6) sab.setDate(sab.getDate() - 1);
+      const r = await marcarFaltantes(db as never, { fecha: sab });
+      expect(r.faltas + r.feriados + r.vacaciones + r.reposos).toBe(0);
+    });
+
+    it('cota anti-infinito: nada previo al creadoEn del empleado', async () => {
+      const db = memoriaDb();
+      // Sobrescribir empleados: uno creado después de la fecha a cerrar
+      (db.empleado.findMany as () => Promise<{ id: number; creadoEn: Date; activo: boolean }[]>) = async () => [
+        { id: 1, creadoEn: D("2020-01-01"), activo: true },
+        { id: 9, creadoEn: new Date(), activo: true }, // creado hoy → ayer es previo a su existencia
+      ];
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      expect(r.faltas).toBe(1); // solo el empleado 1
+      expect(r.omitidos).toBe(1); // el 9 omitido por cota
+      expect(db._rows.every(x => x.empleadoId === 1)).toBe(true);
     });
   });
 

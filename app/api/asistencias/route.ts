@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { Prisma } from "@prisma/client";
 import { getVenezuelaDate, toDateOnly, parseTime } from "@/lib/date-utils";
+import { autoMarkRange } from "@/lib/auto-marcado";
 
 interface SessionUser {
   id: string;
@@ -69,6 +70,38 @@ export async function GET(req: Request) {
       select: { id: true },
     });
     where.empleadoId = { in: empleadosGerencia.map(e => e.id) };
+  }
+
+  // Reconciliar: vacaciones/reposos vigentes en el rango (hasta hoy como máximo) deben tener su fila,
+  // aunque el empleado nunca haya fichado y el permiso se haya creado antes del auto-marcado.
+  try {
+    const hoyD = toDateOnly(getVenezuelaDate());
+    const rIni = desde ? new Date(desde) : hoyD;
+    const rFinReq = hasta ? new Date(hasta) : hoyD;
+    const rFin = rFinReq > hoyD ? hoyD : rFinReq;
+    if (rIni <= rFin) {
+      const empIds = typeof where.empleadoId === "number"
+        ? [where.empleadoId]
+        : Array.isArray((where.empleadoId as { in?: number[] } | undefined)?.in)
+          ? (where.empleadoId as { in: number[] }).in
+          : undefined;
+      const solape = { anulada: false, inicio: { lte: rFin }, fin: { gte: rIni }, ...(empIds ? { empleadoId: { in: empIds } } : {}) };
+      const [vacs, reps] = await Promise.all([
+        prisma.vacacionEmpleado.findMany({ where: solape }),
+        prisma.reposoMedico.findMany({ where: solape }),
+      ]);
+      const clamp = (p: { empleadoId: number; inicio: Date; fin: Date }, estado: "VACACIONES" | "REPOSO_MEDICO") =>
+        autoMarkRange(prisma as never, {
+          empleadoId: p.empleadoId,
+          estado,
+          inicio: p.inicio > rIni ? p.inicio : rIni,
+          fin: p.fin < rFin ? p.fin : rFin,
+        });
+      for (const v of vacs) await clamp(v, "VACACIONES");
+      for (const r of reps) await clamp(r, "REPOSO_MEDICO");
+    }
+  } catch (e) {
+    console.error("[asistencias] reconciliación de permisos falló:", e);
   }
 
   const asistencias = await prisma.asistencia.findMany({

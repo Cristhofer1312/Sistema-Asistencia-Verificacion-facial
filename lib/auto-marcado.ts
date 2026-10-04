@@ -23,7 +23,7 @@ type Db = {
     findFirst(a: unknown): Promise<unknown>;
     findMany(a: unknown): Promise<{ id: number; inicio: Date; fin: Date }[]>;
   };
-  empleado: { findMany(a: unknown): Promise<{ id: number }[]> };
+  empleado: { findMany(a: unknown): Promise<{ id: number; creadoEn: Date; activo: boolean }[]> };
 };
 
 /** Días hábiles (lun-vie, UTC) entre inicio y fin, ambos @db.Date. */
@@ -179,6 +179,96 @@ export async function revertRange(
   }
 
   return { revertidas, borradas };
+}
+
+/**
+ * Cierre diario: marca a los activos sin fila de un día ya cerrado.
+ * - Solo días pasados (nunca hoy ni futuro) y hábiles (lun-vie).
+ * - Cota inferior por empleado: nada previo a su `creadoEn` (anti-infinito).
+ * - feriado → FERIADO · vacación/reposo vigente no anulado → ese estado · si no → FALTA.
+ * - Filas existentes (con o sin fichaje) intactas. Empleados inactivos omitidos.
+ */
+export async function marcarFaltantes(
+  db: Db & {
+    empleado: {
+      findMany(a: unknown): Promise<{ id: number; creadoEn: Date; activo: boolean }[]>;
+    };
+  },
+  opts: { fecha?: Date | string } = {}
+): Promise<{ fecha: string; faltas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }> {
+  // Todo en días-calendario UTC (coherente con @db.Date): strings "YYYY-MM-DD"
+  // o Dates UTC-midnight (como las que devuelve Prisma).
+  const normDay = (input: Date | string): Date => {
+    if (typeof input === "string") {
+      const [y, m, d] = input.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d));
+    }
+    return new Date(Date.UTC(input.getUTCFullYear(), input.getUTCMonth(), input.getUTCDate()));
+  };
+
+  const ahora = new Date();
+  const hoyUtc = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate()));
+  const ayerUtc = new Date(hoyUtc);
+  ayerUtc.setUTCDate(ayerUtc.getUTCDate() - 1);
+
+  const fecha = opts.fecha ? normDay(opts.fecha) : ayerUtc;
+  if (fecha > ayerUtc) {
+    throw new Error("Solo se pueden cerrar días pasados (ayer o antes), nunca hoy ni futuro");
+  }
+
+  const dow = fecha.getUTCDay();
+  const res = { fecha: fecha.toISOString().slice(0, 10), faltas: 0, feriados: 0, vacaciones: 0, reposos: 0, omitidos: 0 };
+  if (dow < 1 || dow > 5) return res; // fin de semana: nada que cerrar
+
+  const feriadoEseDia = await esFeriado(db, fecha);
+  const empleados = await db.empleado.findMany({ where: { activo: true }, select: { id: true, creadoEn: true, activo: true } });
+
+  for (const e of empleados) {
+    // Cota anti-infinito: nada previo a existir el empleado en el sistema
+    const creado = new Date(Date.UTC(e.creadoEn.getUTCFullYear(), e.creadoEn.getUTCMonth(), e.creadoEn.getUTCDate()));
+    if (fecha < creado) {
+      res.omitidos++;
+      continue;
+    }
+
+    const row = await db.asistencia.findFirst({ where: { empleadoId: e.id, fecha } });
+    if (row) {
+      res.omitidos++;
+      continue;
+    }
+
+    // Lo individual manda sobre el feriado: se evalúa primero
+    const ind = await estadoIndividual(db, e.id, fecha);
+    if (ind === "VACACIONES") {
+      await db.asistencia.create({
+        data: { empleadoId: e.id, fecha, entrada: null, salida: null, estadoEntrada: "VACACIONES", reglaId: null },
+      });
+      res.vacaciones++;
+      continue;
+    }
+    if (ind === "REPOSO_MEDICO") {
+      await db.asistencia.create({
+        data: { empleadoId: e.id, fecha, entrada: null, salida: null, estadoEntrada: "REPOSO_MEDICO", reglaId: null },
+      });
+      res.reposos++;
+      continue;
+    }
+
+    if (feriadoEseDia) {
+      await db.asistencia.create({
+        data: { empleadoId: e.id, fecha, entrada: null, salida: null, estadoEntrada: "FERIADO", reglaId: null },
+      });
+      res.feriados++;
+      continue;
+    }
+
+    await db.asistencia.create({
+      data: { empleadoId: e.id, fecha, entrada: null, salida: null, estadoEntrada: "FALTA", reglaId: null },
+    });
+    res.faltas++;
+  }
+
+  return res;
 }
 
 /**

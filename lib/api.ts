@@ -129,6 +129,13 @@ export const api = {
     list: () => fetchJson<any[]>("/api/auditoria"),
   },
 
+  // Admin: cierre diario (debug) — marca faltantes del día
+  cierreDia: (fecha?: string) =>
+    fetchJson<{ ok: boolean; fecha: string; faltas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }>("/api/admin/cierre-dia", {
+      method: "POST",
+      body: JSON.stringify(fecha ? { fecha } : {}),
+    }),
+
   // Cambio clave
   cambioClave: (data: { actual?: string; nueva: string; confirmar: string }) =>
     fetchJson<any>("/api/cambio-clave", { method: "POST", body: JSON.stringify(data) }),

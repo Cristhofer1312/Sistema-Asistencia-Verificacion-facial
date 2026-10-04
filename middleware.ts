@@ -43,10 +43,13 @@ export default withAuth(
         if (
           pathname === "/" ||
           pathname.startsWith("/kiosco") ||
+          pathname.startsWith("/models") || // pesos face-api estáticos (el kiosco no tiene sesión)
           pathname.startsWith("/api/fichaje") || // protegida por API Key interna
           pathname.startsWith("/api/kiosco") || // kiosco endpoints (descriptors, match)
           pathname.startsWith("/api/auth")
         ) return true;
+        // Lectura de reglas para el panel del kiosco (el POST sigue exigiendo ADMIN/RRHH en el route)
+        if (pathname.startsWith("/api/reglas") && req.method === "GET") return true;
         // El resto requiere sesión
         return !!token;
       },

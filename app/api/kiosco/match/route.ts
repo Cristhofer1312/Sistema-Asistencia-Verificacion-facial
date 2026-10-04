@@ -103,7 +103,7 @@ async function verifyChallenge(challengeId: string, series: SeriesPoint[] | unde
     let ok = false;
     if (expected === "IZQUIERDA") ok = point.yaw <= -YAW_THRESHOLD;
     else if (expected === "DERECHA") ok = point.yaw >= YAW_THRESHOLD;
-    else if (expected === "FRENTE") ok = Math.abs(point.yaw) < 8 && Math.abs(point.pitch) < 8;
+    else if (expected === "FRENTE") ok = Math.abs(point.yaw) <= 14 && Math.abs(point.pitch) <= 14; // frente con margen amplio (igual que el cliente)
 
     if (ok) {
       stepIdx++;

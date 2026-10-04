@@ -315,9 +315,13 @@ export function FaceIdentify({
           if (!step) return;
           const expected = step.step;
           let stepOk = false;
+          console.log(`[Kiosco] yaw=${pose.yaw.toFixed(1)}° pitch=${pose.pitch.toFixed(1)}° esperando ${expected} (${idx + 1}/${steps.length})`);
           if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -12;
           else if (expected === 'DERECHA') stepOk = pose.yaw >= 12;
-          else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) < 8 && Math.abs(pose.pitch) < 8;
+          // FRENTE con margen amplio: la estimación de pose tiene sesgo y un
+          // rostro de frente real suele leer ±8-14°. La seguridad la da la
+          // secuencia ordenada, no la precisión del frente.
+          else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) <= 14 && Math.abs(pose.pitch) <= 14;
 
           if (stepOk) {
             console.log(`[Kiosco] paso ${idx + 1}/${steps.length} completado: ${expected}`);

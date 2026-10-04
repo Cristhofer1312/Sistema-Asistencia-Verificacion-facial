@@ -9,11 +9,15 @@ type Feriado = {
   creadoEn: string;
 };
 
+type FiltrosFer = { q: string; desde: string; hasta: string };
+const FILTROS_FER_INICIALES: FiltrosFer = { q: "", desde: "", hasta: "" };
+
 export default function Feriados() {
   const [feriados, setFeriados] = useState<Feriado[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modo, setModo] = useState<"dia" | "rango">("dia");
+  const [filtros, setFiltros] = useState<FiltrosFer>(FILTROS_FER_INICIALES);
   const [formData, setFormData] = useState({
     fecha: "",
     fechaIni: "",
@@ -22,23 +26,43 @@ export default function Feriados() {
   });
   const [creating, setCreating] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const primerRef = useRef(true);
+
+  async function cargar(f: FiltrosFer, inicial = false) {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    if (inicial) setLoading(true);
+    try {
+      const params: Record<string, string> = {};
+      if (f.q.trim()) params.q = f.q.trim();
+      if (f.desde) params.desde = f.desde;
+      if (f.hasta) params.hasta = f.hasta;
+      const data = await api.feriados.list(params);
+      if (!abortRef.current.signal.aborted) setFeriados(data);
+    } catch (e: any) {
+      if (e.name !== 'AbortError') setError(e.message || "Error cargando feriados");
+    } finally {
+      if (!abortRef.current.signal.aborted) setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function cargar() {
-      if (abortRef.current) abortRef.current.abort();
-      abortRef.current = new AbortController();
-      try {
-        const data = await api.feriados.list();
-        if (!abortRef.current.signal.aborted) setFeriados(data);
-      } catch (e: any) {
-        if (e.name !== 'AbortError') setError(e.message || "Error cargando feriados");
-      } finally {
-        if (!abortRef.current.signal.aborted) setLoading(false);
-      }
-    }
-    cargar();
+    cargar(FILTROS_FER_INICIALES, true);
     return () => { if (abortRef.current) abortRef.current.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (primerRef.current) {
+      primerRef.current = false;
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => cargar(filtros), 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtros]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -68,8 +92,7 @@ export default function Feriados() {
         await Promise.all(promesas);
         setFormData({ ...formData, fechaIni: "", fechaFin: "", motivo: "" });
       }
-      const data = await api.feriados.list();
-      setFeriados(data);
+      await cargar(filtros);
     } catch (e: any) {
       setError(e.data?.error || e.message || "Error guardando feriado");
     } finally {
@@ -78,12 +101,12 @@ export default function Feriados() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("¿Eliminar este feriado?")) return;
+    if (!confirm("¿Eliminar este feriado? Se revertirán sus marcas automáticas.")) return;
     try {
-      // No DELETE endpoint yet, would need to add one
-      alert("Eliminar no implementado aún - use DB directamente");
+      await api.feriados.delete(id);
+      await cargar(filtros);
     } catch (e: any) {
-      alert(e.message || "Error eliminando");
+      alert(e.data?.error || e.message || "Error eliminando");
     }
   }
 
@@ -186,6 +209,36 @@ export default function Feriados() {
         </form>
       </div>
 
+      {/* Filtros */}
+      <div className="card" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}> Buscar feriados</h3>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div className="form-group" style={{ flex: "2 1 220px" }}>
+            <label htmlFor="fer-f-q">Motivo</label>
+            <input
+              id="fer-f-q"
+              type="text"
+              value={filtros.q}
+              onChange={e => setFiltros({ ...filtros, q: e.target.value })}
+              placeholder="Motivo del feriado…"
+            />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="fer-f-desde">Desde</label>
+            <input id="fer-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="fer-f-hasta">Hasta</label>
+            <input id="fer-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFiltros(FILTROS_FER_INICIALES)}>
+              Limpiar
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* List */}
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -221,7 +274,6 @@ export default function Feriados() {
                         className="btn btn-sm btn-danger"
                         style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}
                         onClick={() => handleDelete(f.id)}
-                        disabled
                       >
                         Eliminar
                       </button>

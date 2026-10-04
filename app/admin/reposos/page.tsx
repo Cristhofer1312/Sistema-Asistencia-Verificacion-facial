@@ -14,8 +14,14 @@ type Reposo = {
   documento: string | null;
   registradoPorId: number | null;
   creadoEn: string;
+  anulada: boolean;
+  motivoAnulacion: string | null;
+  anuladoEn: string | null;
   empleado: { nombre: string; apellido: string; cedula: string };
 };
+
+type Filtros = { q: string; gerenciaId: string; desde: string; hasta: string; estado: string; situacion: string };
+const FILTROS_INICIALES: Filtros = { q: "", gerenciaId: "", desde: "", hasta: "", estado: "todas", situacion: "todas" };
 
 function diasEntre(inicio: string, fin: string) {
   return Math.round((new Date(fin).getTime() - new Date(inicio).getTime()) / 86400000) + 1;
@@ -24,36 +30,64 @@ function diasEntre(inicio: string, fin: string) {
 export default function Reposos() {
   const [reposos, setReposos] = useState<Reposo[]>([]);
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
+  const [gerencias, setGerencias] = useState<{ id: number; nombre: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [filtros, setFiltros] = useState<Filtros>(FILTROS_INICIALES);
+  const [anular, setAnular] = useState<{ id: number | null; motivo: string; error: string | null; procesando: boolean }>({ id: null, motivo: "", error: null, procesando: false });
   const [formData, setFormData] = useState({ empleadoId: "", inicio: "", fin: "", motivo: "", documento: "" });
   const [creating, setCreating] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const primerRef = useRef(true);
   const hoy = getHoyVE();
 
-  useEffect(() => {
-    async function cargar() {
-      if (abortRef.current) abortRef.current.abort();
-      abortRef.current = new AbortController();
-      try {
-        const [emps, reps] = await Promise.all([
-          api.empleados.list() as Promise<Empleado[]>,
-          api.reposos.list() as Promise<Reposo[]>,
-        ]);
-        if (!abortRef.current.signal.aborted) {
-          setEmpleados(emps.filter((e) => e.activo));
-          setReposos(reps);
-        }
-      } catch (e: any) {
-        if (e.name !== "AbortError") setError(e.message || "Error cargando datos");
-      } finally {
-        if (!abortRef.current.signal.aborted) setLoading(false);
+  async function cargar(f: Filtros, inicial = false) {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    if (inicial) setLoading(true);
+    try {
+      const params: Record<string, string> = {};
+      if (f.q.trim()) params.q = f.q.trim();
+      if (f.gerenciaId) params.gerenciaId = f.gerenciaId;
+      if (f.desde) params.desde = f.desde;
+      if (f.hasta) params.hasta = f.hasta;
+      if (f.estado !== "todas") params.estado = f.estado;
+      if (f.situacion !== "todas") params.situacion = f.situacion;
+      const [emps, reps, gers] = await Promise.all([
+        api.empleados.list() as Promise<Empleado[]>,
+        api.reposos.list(params) as unknown as Promise<Reposo[]>,
+        api.gerencias.list() as Promise<{ id: number; nombre: string }[]>,
+      ]);
+      if (!abortRef.current.signal.aborted) {
+        setEmpleados(emps.filter((e) => e.activo));
+        setReposos(reps);
+        setGerencias(gers);
       }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') setError(e.message || "Error cargando datos");
+    } finally {
+      if (!abortRef.current.signal.aborted) setLoading(false);
     }
-    cargar();
+  }
+
+  useEffect(() => {
+    cargar(FILTROS_INICIALES, true);
     return () => { if (abortRef.current) abortRef.current.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (primerRef.current) {
+      primerRef.current = false;
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => cargar(filtros), 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtros]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -80,7 +114,7 @@ export default function Reposos() {
       if (res?.faltasConvertidas > 0) {
         setAviso(`${res.faltasConvertidas} falta(s) ya registradas en ese rango pasaron a REPOSO MÉDICO.`);
       }
-      setReposos((await api.reposos.list()) as Reposo[]);
+      await cargar(filtros);
     } catch (e: any) {
       setError(e.data?.error || e.message || "Error registrando reposo");
     } finally {
@@ -88,13 +122,23 @@ export default function Reposos() {
     }
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("¿Eliminar este reposo médico? Los días proyectados sin marcaje volverán a FALTA.")) return;
+  function abrirAnular(id: number) {
+    setAnular({ id, motivo: "", error: null, procesando: false });
+  }
+
+  async function handleAnular() {
+    if (anular.id == null) return;
+    if (anular.motivo.trim().length < 5) {
+      setAnular(a => ({ ...a, error: "El motivo de anulación es obligatorio (mínimo 5 caracteres)" }));
+      return;
+    }
+    setAnular(a => ({ ...a, procesando: true, error: null }));
     try {
-      await api.reposos.delete(id);
-      setReposos((await api.reposos.list()) as Reposo[]);
+      await api.reposos.anular(anular.id, anular.motivo.trim());
+      setAnular({ id: null, motivo: "", error: null, procesando: false });
+      await cargar(filtros);
     } catch (e: any) {
-      alert(e.data?.error || e.message || "Error eliminando");
+      setAnular(a => ({ ...a, procesando: false, error: e.data?.error || e.message || "Error anulando" }));
     }
   }
 
@@ -103,7 +147,13 @@ export default function Reposos() {
   }
 
   const estadoDe = (r: Reposo) =>
-    r.fin < hoy ? { label: "FINALIZADO", cls: "badge" } : r.inicio > hoy ? { label: "PROGRAMADO", cls: "badge b-just" } : { label: "VIGENTE", cls: "badge b-rep" };
+    r.anulada
+      ? { label: "ANULADA", cls: "badge b-inactive" }
+      : r.fin < hoy
+        ? { label: "FINALIZADO", cls: "badge" }
+        : r.inicio > hoy
+          ? { label: "PROGRAMADO", cls: "badge b-just" }
+          : { label: "VIGENTE", cls: "badge b-rep" };
 
   return (
     <div>
@@ -161,6 +211,62 @@ export default function Reposos() {
         </form>
       </div>
 
+      {/* Filtros */}
+      <div className="card" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}> Buscar reposos otorgados</h3>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div className="form-group" style={{ flex: "2 1 220px" }}>
+            <label htmlFor="rep-f-q">Empleado o motivo</label>
+            <input
+              id="rep-f-q"
+              type="text"
+              value={filtros.q}
+              onChange={e => setFiltros({ ...filtros, q: e.target.value })}
+              placeholder="Nombre, cédula o motivo…"
+            />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 160px" }}>
+            <label htmlFor="rep-f-ger">Gerencia</label>
+            <Select id="rep-f-ger" value={filtros.gerenciaId} onChange={e => setFiltros({ ...filtros, gerenciaId: e.target.value })}>
+              <option value="">Todas</option>
+              {gerencias.map(g => (
+                <option key={g.id} value={g.id}>{g.nombre}</option>
+              ))}
+            </Select>
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="rep-f-desde">Desde</label>
+            <input id="rep-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="rep-f-hasta">Hasta</label>
+            <input id="rep-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="rep-f-est">Estado</label>
+            <Select id="rep-f-est" value={filtros.estado} onChange={e => setFiltros({ ...filtros, estado: e.target.value })}>
+              <option value="todas">Todas</option>
+              <option value="vigentes">Vigentes</option>
+              <option value="anuladas">Anuladas</option>
+            </Select>
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="rep-f-sit">Situación</label>
+            <Select id="rep-f-sit" value={filtros.situacion} onChange={e => setFiltros({ ...filtros, situacion: e.target.value })}>
+              <option value="todas">Todas</option>
+              <option value="vigente">En curso</option>
+              <option value="programada">Programados</option>
+              <option value="finalizada">Finalizados</option>
+            </Select>
+          </div>
+          <div className="form-group">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFiltros(FILTROS_INICIALES)}>
+              Limpiar
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3>Reposos registrados</h3>
@@ -188,7 +294,7 @@ export default function Reposos() {
                 reposos.map((r) => {
                   const est = estadoDe(r);
                   return (
-                    <tr key={r.id}>
+                    <tr key={r.id} style={{ opacity: r.anulada ? 0.65 : 1 }}>
                       <td>
                         <div style={{ fontWeight: 600 }}>{nombreCompleto(r.empleado)}</div>
                         <div className="muted mono" style={{ fontSize: ".75rem" }}>{r.empleado.cedula}</div>
@@ -197,6 +303,11 @@ export default function Reposos() {
                         {formatFriendlyDate(r.inicio)} → {formatFriendlyDate(r.fin)}
                         <div className="muted" style={{ fontSize: ".72rem", fontWeight: 400 }}>{diasEntre(r.inicio, r.fin)} día(s)</div>
                         <div className={est.cls} style={{ display: "inline-flex", marginTop: 4, fontSize: ".65rem" }}>{est.label}</div>
+                        {r.anulada && r.motivoAnulacion && (
+                          <div className="muted" style={{ fontSize: ".72rem", fontWeight: 400, marginTop: 4, maxWidth: 220 }}>
+                            Motivo: {r.motivoAnulacion}
+                          </div>
+                        )}
                       </td>
                       <td className="muted">{r.motivo || "—"}</td>
                       <td className="muted" style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -207,13 +318,15 @@ export default function Reposos() {
                           : "—"}
                       </td>
                       <td>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}
-                          onClick={() => handleDelete(r.id)}
-                        >
-                          Eliminar
-                        </button>
+                        {!r.anulada && (
+                          <button
+                            className="btn btn-sm btn-danger"
+                            style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}
+                            onClick={() => abrirAnular(r.id)}
+                          >
+                            Anular
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -223,6 +336,57 @@ export default function Reposos() {
           </table>
         </div>
       </div>
+
+      {/* Modal anular */}
+      {anular.id != null && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(2,6,23,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onClick={() => { if (!anular.procesando) setAnular({ id: null, motivo: "", error: null, procesando: false }); }}
+        >
+          <div
+            className="card"
+            style={{ width: "100%", maxWidth: 480, margin: 0 }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 style={{ marginBottom: 8 }}>Anular reposo médico</h3>
+            <p className="muted" style={{ fontSize: ".8125rem", marginBottom: 16 }}>
+              El registro no se elimina: queda marcado como anulado y se revierten sus días.
+              Indique el motivo de la revocación (obligatorio).
+            </p>
+            <div className="form-group">
+              <label htmlFor="rep-anular-motivo">Motivo de anulación <span style={{ color: "var(--bad)" }}>*</span></label>
+              <textarea
+                id="rep-anular-motivo"
+                value={anular.motivo}
+                onChange={e => setAnular(a => ({ ...a, motivo: e.target.value }))}
+                placeholder="Ej. Alta médica anticipada, error en fechas…"
+                rows={3}
+                disabled={anular.procesando}
+                style={{ width: "100%" }}
+              />
+            </div>
+            {anular.error && <div className="alert alert-warn" style={{ marginTop: 12 }}><span></span><span>{anular.error}</span></div>}
+            <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                disabled={anular.procesando}
+                onClick={() => setAnular({ id: null, motivo: "", error: null, procesando: false })}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                disabled={anular.procesando}
+                onClick={handleAnular}
+              >
+                {anular.procesando ? "Anulando…" : "Confirmar anulación"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -4,10 +4,28 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/auditoria";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { autoMarkFeriado, revertRange } from "@/lib/auto-marcado";
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const q = searchParams.get("q")?.trim();
+  const desde = searchParams.get("desde");
+  const hasta = searchParams.get("hasta");
+
+  const where: { motivo?: { contains: string; mode: "insensitive" }; fecha?: { gte?: Date; lte?: Date } } = {};
+  if (q) where.motivo = { contains: q, mode: "insensitive" };
+  if (desde && hasta) {
+    where.fecha = { gte: new Date(desde), lte: new Date(hasta) };
+  } else if (desde) {
+    where.fecha = { gte: new Date(desde) };
+  } else if (hasta) {
+    where.fecha = { lte: new Date(hasta) };
+  }
+
   const feriados = await prisma.feriado.findMany({
-    orderBy: { fecha: 'desc' }
+    where,
+    orderBy: { fecha: 'desc' },
+    take: 500,
   });
   return NextResponse.json(feriados);
 }
@@ -27,11 +45,14 @@ export async function DELETE(req: Request) {
 
   await prisma.feriado.delete({ where: { id: Number(id) } });
 
-  await audit("ELIMINAR_FERIADO", `Feriado eliminado: ${feriado.fecha.toISOString().split('T')[0]} - ${feriado.motivo}`, {
+  // Revierte las marcas FERIADO sin marcaje recalculando (vacación/reposo vigente manda)
+  const rev = await revertRange(prisma, { estado: "FERIADO", inicio: feriado.fecha, fin: feriado.fecha });
+
+  await audit("ELIMINAR_FERIADO", `Feriado eliminado: ${feriado.fecha.toISOString().split('T')[0]} - ${feriado.motivo} (${rev.revertidas} revertida(s), ${rev.borradas} borrada(s))`, {
     usuarioId: Number((session.user as any).id),
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, ...rev });
 }
 
 export async function POST(req: Request) {
@@ -50,8 +71,11 @@ export async function POST(req: Request) {
       }
     });
 
-    await audit("CREAR_FERIADO", `Creado feriado: ${fecha} - ${motivo}`, { usuarioId: Number((session.user as any).id) });
-    return NextResponse.json(feriado, { status: 201 });
+    // Marcado automático del día a los activos sin fila (respeta marcas individuales)
+    const marc = await autoMarkFeriado(prisma, new Date(fecha));
+
+    await audit("CREAR_FERIADO", `Creado feriado: ${fecha} - ${motivo} (${marc.creadas} día(s) marcado(s))`, { usuarioId: Number((session.user as any).id) });
+    return NextResponse.json({ ...feriado, diasMarcados: marc.creadas }, { status: 201 });
   } catch (err: any) {
     if (err.code === "P2002") {
       return NextResponse.json({ error: "Ya existe un feriado en esa fecha" }, { status: 400 });

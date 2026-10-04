@@ -164,9 +164,14 @@ model VacacionEmpleado {
   motivo      String?  @db.VarChar(200)
   aprobadorId Int?
   creadoEn    DateTime @default(now())
+  anulada          Boolean   @default(false)
+  motivoAnulacion  String?   @db.VarChar(300)
+  anuladoPorId     Int?
+  anuladoEn        DateTime?
 
   // Anti-solape: validado en capa de aplicación + CHECK en BD
   @@index([empleadoId, inicio, fin])
+  @@index([empleadoId, anulada])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -182,8 +187,13 @@ model ReposoMedico {
   documento     String?  @db.VarChar(500)   // URL o nombre del archivo del reposo
   registradoPorId Int?
   creadoEn      DateTime @default(now())
+  anulada          Boolean   @default(false)
+  motivoAnulacion  String?   @db.VarChar(300)
+  anuladoPorId     Int?
+  anuladoEn        DateTime?
 
   @@index([empleadoId, inicio, fin])
+  @@index([empleadoId, anulada])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -242,6 +252,8 @@ enum AccionAuditoria {
   MATCH_KIOSCO_REPLAY
   MATCH_KIOSCO_BAD_QUALITY
   MATCH_KIOSCO_BAD_CHALLENGE
+  ANULAR_VACACION
+  ANULAR_REPOSO
 }
 
 model LogAuditoria {

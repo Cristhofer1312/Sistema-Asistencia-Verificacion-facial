@@ -13,14 +13,23 @@ type Vacacion = {
   motivo: string | null;
   aprobadorId: number | null;
   creadoEn: string;
-  empleado: { nombre: string; apellido: string; cedula: string; gerencia: string };
+  anulada: boolean;
+  motivoAnulacion: string | null;
+  anuladoEn: string | null;
+  empleado: { nombre: string; apellido: string; cedula: string; gerencia: string | { nombre: string }; gerenciaId?: number };
 };
+
+type Filtros = { q: string; gerenciaId: string; desde: string; hasta: string; estado: string; situacion: string };
+const FILTROS_INICIALES: Filtros = { q: "", gerenciaId: "", desde: "", hasta: "", estado: "todas", situacion: "todas" };
 
 export default function Vacaciones() {
   const [vacaciones, setVacaciones] = useState<Vacacion[]>([]);
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
+  const [gerencias, setGerencias] = useState<{ id: number; nombre: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filtros, setFiltros] = useState<Filtros>(FILTROS_INICIALES);
+  const [anular, setAnular] = useState<{ id: number | null; motivo: string; error: string | null; procesando: boolean }>({ id: null, motivo: "", error: null, procesando: false });
   const [formData, setFormData] = useState({
     empleadoId: "",
     inicio: "",
@@ -29,29 +38,54 @@ export default function Vacaciones() {
   });
   const [creating, setCreating] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  async function cargar(f: Filtros, inicial = false) {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    if (inicial) setLoading(true);
+    try {
+      const params: Record<string, string> = {};
+      if (f.q.trim()) params.q = f.q.trim();
+      if (f.gerenciaId) params.gerenciaId = f.gerenciaId;
+      if (f.desde) params.desde = f.desde;
+      if (f.hasta) params.hasta = f.hasta;
+      if (f.estado !== "todas") params.estado = f.estado;
+      if (f.situacion !== "todas") params.situacion = f.situacion;
+      const [emps, vacs, gers] = await Promise.all([
+        api.empleados.list() as Promise<Empleado[]>,
+        api.vacaciones.list(params) as unknown as Promise<Vacacion[]>,
+        api.gerencias.list() as Promise<{ id: number; nombre: string }[]>,
+      ]);
+      if (!abortRef.current.signal.aborted) {
+        setEmpleados(emps.filter(e => e.activo));
+        setVacaciones(vacs);
+        setGerencias(gers);
+      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') setError(e.message || "Error cargando datos");
+    } finally {
+      if (!abortRef.current.signal.aborted) setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function cargar() {
-      if (abortRef.current) abortRef.current.abort();
-      abortRef.current = new AbortController();
-      try {
-        const [emps, vacs] = await Promise.all([
-          api.empleados.list() as Promise<Empleado[]>,
-          api.vacaciones.list() as Promise<Vacacion[]>,
-        ]);
-        if (!abortRef.current.signal.aborted) {
-          setEmpleados(emps.filter(e => e.activo));
-          setVacaciones(vacs);
-        }
-      } catch (e: any) {
-        if (e.name !== 'AbortError') setError(e.message || "Error cargando datos");
-      } finally {
-        if (!abortRef.current.signal.aborted) setLoading(false);
-      }
-    }
-    cargar();
+    cargar(FILTROS_INICIALES, true);
     return () => { if (abortRef.current) abortRef.current.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const primerRef = useRef(true);
+  useEffect(() => {
+    if (primerRef.current) {
+      primerRef.current = false;
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => cargar(filtros), 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtros]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,8 +107,7 @@ export default function Vacaciones() {
         motivo: formData.motivo || undefined,
       });
       setFormData({ empleadoId: "", inicio: "", fin: "", motivo: "" });
-      const vacs = await api.vacaciones.list() as unknown as Vacacion[];
-      setVacaciones(vacs);
+      await cargar(filtros);
     } catch (e: any) {
       setError(e.data?.error || e.message || "Error asignando vacaciones");
     } finally {
@@ -82,14 +115,26 @@ export default function Vacaciones() {
     }
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("¿Eliminar estas vacaciones?")) return;
+  function abrirAnular(id: number) {
+    setAnular({ id, motivo: "", error: null, procesando: false });
+  }
+
+  async function handleAnular() {
+    if (anular.id == null) return;
+    if (anular.motivo.trim().length < 5) {
+      setAnular(a => ({ ...a, error: "El motivo de anulación es obligatorio (mínimo 5 caracteres)" }));
+      return;
+    }
+    setAnular(a => ({ ...a, procesando: true, error: null }));
     try {
-      await api.vacaciones.delete(id);
-      const vacs = await api.vacaciones.list() as unknown as Vacacion[];
-      setVacaciones(vacs);
+      const res = await api.vacaciones.anular(anular.id, anular.motivo.trim());
+      setAnular({ id: null, motivo: "", error: null, procesando: false });
+      await cargar(filtros);
+      if (res && (res.revertidas > 0 || res.borradas > 0)) {
+        setError(null);
+      }
     } catch (e: any) {
-      alert(e.data?.error || e.message || "Error eliminando");
+      setAnular(a => ({ ...a, procesando: false, error: e.data?.error || e.message || "Error anulando" }));
     }
   }
 
@@ -171,6 +216,62 @@ export default function Vacaciones() {
         </form>
       </div>
 
+      {/* Filtros */}
+      <div className="card" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}> Buscar registros otorgados</h3>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div className="form-group" style={{ flex: "2 1 220px" }}>
+            <label htmlFor="vac-f-q">Empleado o motivo</label>
+            <input
+              id="vac-f-q"
+              type="text"
+              value={filtros.q}
+              onChange={e => setFiltros({ ...filtros, q: e.target.value })}
+              placeholder="Nombre, cédula o motivo…"
+            />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 160px" }}>
+            <label htmlFor="vac-f-ger">Gerencia</label>
+            <Select id="vac-f-ger" value={filtros.gerenciaId} onChange={e => setFiltros({ ...filtros, gerenciaId: e.target.value })}>
+              <option value="">Todas</option>
+              {gerencias.map(g => (
+                <option key={g.id} value={g.id}>{g.nombre}</option>
+              ))}
+            </Select>
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="vac-f-desde">Desde</label>
+            <input id="vac-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="vac-f-hasta">Hasta</label>
+            <input id="vac-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="vac-f-est">Estado</label>
+            <Select id="vac-f-est" value={filtros.estado} onChange={e => setFiltros({ ...filtros, estado: e.target.value })}>
+              <option value="todas">Todas</option>
+              <option value="vigentes">Vigentes</option>
+              <option value="anuladas">Anuladas</option>
+            </Select>
+          </div>
+          <div className="form-group" style={{ flex: "1 1 140px" }}>
+            <label htmlFor="vac-f-sit">Situación</label>
+            <Select id="vac-f-sit" value={filtros.situacion} onChange={e => setFiltros({ ...filtros, situacion: e.target.value })}>
+              <option value="todas">Todas</option>
+              <option value="vigente">En curso</option>
+              <option value="programada">Programadas</option>
+              <option value="finalizada">Finalizadas</option>
+            </Select>
+          </div>
+          <div className="form-group">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFiltros(FILTROS_INICIALES)}>
+              Limpiar
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* List */}
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -184,7 +285,7 @@ export default function Vacaciones() {
                 <th>Empleado</th>
                 <th>Período</th>
                 <th>Motivo</th>
-                <th>Aprobador</th>
+                <th>Estado</th>
                 <th>Acción</th>
               </tr>
             </thead>
@@ -197,7 +298,7 @@ export default function Vacaciones() {
                 </tr>
               ) : (
                 vacaciones.map((v) => (
-                  <tr key={v.id}>
+                  <tr key={v.id} style={{ opacity: v.anulada ? 0.65 : 1 }}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{nombreCompleto(v.empleado)}</div>
                       <div className="muted mono" style={{ fontSize: ".75rem" }}>{v.empleado.cedula}</div>
@@ -206,15 +307,28 @@ export default function Vacaciones() {
                       {formatFriendlyDate(v.inicio)} → {formatFriendlyDate(v.fin)}
                     </td>
                     <td className="muted">{v.motivo || "—"}</td>
-                    <td className="muted mono">User {v.aprobadorId ?? "—"}</td>
                     <td>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}
-                        onClick={() => handleDelete(v.id)}
-                      >
-                        Eliminar
-                      </button>
+                      {v.anulada ? (
+                        <div>
+                          <span className="badge b-inactive">ANULADA</span>
+                          <div className="muted" style={{ fontSize: ".72rem", marginTop: 4, maxWidth: 220 }}>
+                            Motivo: {v.motivoAnulacion || "—"}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="badge b-tiempo">VIGENTE</span>
+                      )}
+                    </td>
+                    <td>
+                      {!v.anulada && (
+                        <button
+                          className="btn btn-sm btn-danger"
+                          style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}
+                          onClick={() => abrirAnular(v.id)}
+                        >
+                          Anular
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -223,6 +337,57 @@ export default function Vacaciones() {
           </table>
         </div>
       </div>
+
+      {/* Modal anular */}
+      {anular.id != null && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(2,6,23,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onClick={() => { if (!anular.procesando) setAnular({ id: null, motivo: "", error: null, procesando: false }); }}
+        >
+          <div
+            className="card"
+            style={{ width: "100%", maxWidth: 480, margin: 0 }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 style={{ marginBottom: 8 }}>Anular vacaciones</h3>
+            <p className="muted" style={{ fontSize: ".8125rem", marginBottom: 16 }}>
+              El registro no se elimina: queda marcado como anulado y se revierten sus días.
+              Indique el motivo de la revocación (obligatorio).
+            </p>
+            <div className="form-group">
+              <label htmlFor="vac-anular-motivo">Motivo de anulación <span style={{ color: "var(--bad)" }}>*</span></label>
+              <textarea
+                id="vac-anular-motivo"
+                value={anular.motivo}
+                onChange={e => setAnular(a => ({ ...a, motivo: e.target.value }))}
+                placeholder="Ej. Error en fechas, revocadas por gerencia…"
+                rows={3}
+                disabled={anular.procesando}
+                style={{ width: "100%" }}
+              />
+            </div>
+            {anular.error && <div className="alert alert-warn" style={{ marginTop: 12 }}><span></span><span>{anular.error}</span></div>}
+            <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                disabled={anular.procesando}
+                onClick={() => setAnular({ id: null, motivo: "", error: null, procesando: false })}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                disabled={anular.procesando}
+                onClick={handleAnular}
+              >
+                {anular.procesando ? "Anulando…" : "Confirmar anulación"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

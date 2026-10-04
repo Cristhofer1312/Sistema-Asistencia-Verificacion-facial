@@ -97,7 +97,7 @@ export async function GET(req: Request) {
 
       // Calcular horas extras en tiempo real si aún no hay salida y es hoy
       if (!a.salida && a.entrada && fechaStr === hoyStr && a.regla) {
-        if (a.estadoEntrada === "FERIADO" || a.estadoEntrada === "VACACIONES") {
+        if (a.estadoEntrada === "FERIADO" || a.estadoEntrada === "VACACIONES" || a.estadoEntrada === "REPOSO_MEDICO") {
           const diffMin = Math.floor((nowVE.getTime() - a.entrada.getTime()) / 60000);
           calculatedExtras = diffMin > 0 ? diffMin / 60 : 0;
         } else {

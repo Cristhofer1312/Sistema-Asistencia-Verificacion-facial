@@ -28,18 +28,14 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
 
   const feriado = await prisma.feriado.findUnique({ where: { fecha: hoy } });
   const vacacion = await prisma.vacacionEmpleado.findFirst({
-    where: { empleadoId, inicio: { lte: hoy }, fin: { gte: hoy } },
+    where: { empleadoId, anulada: false, inicio: { lte: hoy }, fin: { gte: hoy } },
   });
   const reposo = await prisma.reposoMedico.findFirst({
-    where: { empleadoId, inicio: { lte: hoy }, fin: { gte: hoy } },
+    where: { empleadoId, anulada: false, inicio: { lte: hoy }, fin: { gte: hoy } },
   });
 
-  if (reposo) {
-    return {
-      tipo: "reposo_medico",
-      msg: `${empleado.nombre} ${empleado.apellido} está de REPOSO MÉDICO hasta el ${reposo.fin.toISOString().slice(0, 10)}. No debe marcar.`,
-    };
-  }
+  // Feriado, vacaciones o reposo: el marcaje se clasifica directo según la clase del día
+  const esClaseEspecial = (e: string) => e === "FERIADO" || e === "VACACIONES" || e === "REPOSO_MEDICO";
 
   const ultimaAsistencia = await prisma.asistencia.findFirst({
     where: { empleadoId, fecha: hoy },
@@ -53,6 +49,20 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
     }
   }
 
+  // Fila automática sin marcaje (vacación/reposo/feriado generado): el escaneo
+  // la completa con la entrada conservando el estado. Evita violar el
+  // @@unique([empleadoId, fecha]) que un create provocaría.
+  if (ultimaAsistencia && !ultimaAsistencia.entrada && esClaseEspecial(ultimaAsistencia.estadoEntrada)) {
+    await prisma.asistencia.update({
+      where: { id: ultimaAsistencia.id },
+      data: { entrada: nowVE, reglaId: regla.id, actualizadoEn: nowVE },
+    });
+    await audit("FICHAJE_ENTRADA", `Entrada sobre marca automática (${ultimaAsistencia.estadoEntrada}): ${empleado.cedula}`);
+    const tipoAuto: Record<string, string> = { FERIADO: "feriado", VACACIONES: "vacaciones", REPOSO_MEDICO: "reposo_medico" };
+    const tipo = tipoAuto[ultimaAsistencia.estadoEntrada] ?? "a_tiempo";
+    return { tipo, msg: `Entrada registrada — ${ultimaAsistencia.estadoEntrada}` };
+  }
+
   if (ultimaAsistencia) {
     if (ultimaAsistencia.salida) {
       throw new Error("DUPLICADO:Ya ha registrado su entrada y salida por hoy");
@@ -64,7 +74,7 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
     let estadoSalida: "COMPLETADO" | "TEMPRANO" = "COMPLETADO";
     let extrasH = 0;
 
-    if (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") {
+    if (esClaseEspecial(ultimaAsistencia.estadoEntrada)) {
       estadoSalida = "COMPLETADO";
       const entradaTime = ultimaAsistencia.entrada ? ultimaAsistencia.entrada.getTime() : nowVE.getTime();
       const diffMin = Math.floor((nowVE.getTime() - entradaTime) / 60000);
@@ -82,8 +92,8 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
     await audit("FICHAJE_SALIDA", `Salida registrada para ${empleado.cedula} (${estadoSalida})`);
 
     return {
-      tipo: (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") ? "completado" : (estadoSalida === "TEMPRANO" ? "temprano" : "completado"),
-      msg: `Salida registrada — ${estadoSalida === "COMPLETADO" && (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") ? ultimaAsistencia.estadoEntrada : estadoSalida}`,
+      tipo: esClaseEspecial(ultimaAsistencia.estadoEntrada) ? "completado" : (estadoSalida === "TEMPRANO" ? "temprano" : "completado"),
+      msg: `Salida registrada — ${estadoSalida === "COMPLETADO" && esClaseEspecial(ultimaAsistencia.estadoEntrada) ? ultimaAsistencia.estadoEntrada : estadoSalida}`,
       extrasH,
     };
   }
@@ -103,6 +113,14 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
     });
     await audit("FICHAJE_ENTRADA", `Entrada registrada para ${empleado.cedula} (VACACIONES)`);
     return { tipo: "vacaciones", msg: "Entrada registrada — VACACIONES" };
+  }
+
+  if (reposo) {
+    await prisma.asistencia.create({
+      data: { empleadoId, fecha: hoy, entrada: nowVE, estadoEntrada: "REPOSO_MEDICO", reglaId: regla.id },
+    });
+    await audit("FICHAJE_ENTRADA", `Entrada registrada para ${empleado.cedula} (REPOSO_MEDICO)`);
+    return { tipo: "reposo_medico", msg: "Entrada registrada — REPOSO MÉDICO" };
   }
 
   const horaActualMin = nowVE.getHours() * 60 + nowVE.getMinutes();

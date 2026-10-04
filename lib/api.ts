@@ -47,29 +47,45 @@ export const api = {
 
   // Vacaciones
   vacaciones: {
-    list: (params?: { empleadoId?: number }) => {
+    list: (params?: { empleadoId?: number; q?: string; gerenciaId?: number; desde?: string; hasta?: string; estado?: string; situacion?: string }) => {
       const sp = new URLSearchParams();
       if (params?.empleadoId) sp.set("empleadoId", String(params.empleadoId));
+      if (params?.q) sp.set("q", params.q);
+      if (params?.gerenciaId) sp.set("gerenciaId", String(params.gerenciaId));
+      if (params?.desde) sp.set("desde", params.desde);
+      if (params?.hasta) sp.set("hasta", params.hasta);
+      if (params?.estado) sp.set("estado", params.estado);
+      if (params?.situacion) sp.set("situacion", params.situacion);
       return fetchJson<any[]>(`/api/vacaciones?${sp}`);
     },
     create: (data: { empleadoId: number; inicio: string; fin: string; motivo?: string }) =>
       fetchJson<any>("/api/vacaciones", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) =>
       fetchJson<any>(`/api/vacaciones?id=${id}`, { method: "DELETE" }),
+    anular: (id: number, motivoAnulacion: string) =>
+      fetchJson<any>("/api/vacaciones/anular", { method: "POST", body: JSON.stringify({ id, motivoAnulacion }) }),
   },
 
   // Reposos médicos
   reposos: {
-    list: (params?: { empleadoId?: number; fecha?: string }) => {
+    list: (params?: { empleadoId?: number; fecha?: string; q?: string; gerenciaId?: number; desde?: string; hasta?: string; estado?: string; situacion?: string }) => {
       const sp = new URLSearchParams();
       if (params?.empleadoId) sp.set("empleadoId", String(params.empleadoId));
       if (params?.fecha) sp.set("fecha", params.fecha);
+      if (params?.q) sp.set("q", params.q);
+      if (params?.gerenciaId) sp.set("gerenciaId", String(params.gerenciaId));
+      if (params?.desde) sp.set("desde", params.desde);
+      if (params?.hasta) sp.set("hasta", params.hasta);
+      if (params?.estado) sp.set("estado", params.estado);
+      if (params?.situacion) sp.set("situacion", params.situacion);
       return fetchJson<any[]>(`/api/reposos?${sp}`);
     },
     create: (data: { empleadoId: number; inicio: string; fin: string; motivo?: string; documento?: string }) =>
       fetchJson<any>("/api/reposos", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) =>
       fetchJson<any>(`/api/reposos?id=${id}`, { method: "DELETE" }),
+    anular: (id: number, motivoAnulacion: string) =>
+      fetchJson<any>("/api/reposos/anular", { method: "POST", body: JSON.stringify({ id, motivoAnulacion }) }),
   },
 
   // Empleados
@@ -95,7 +111,15 @@ export const api = {
 
   // Feriados
   feriados: {
-    list: () => fetchJson<any[]>("/api/feriados"),
+    list: (params?: { q?: string; desde?: string; hasta?: string }) => {
+      const sp = new URLSearchParams();
+      if (params?.q) sp.set("q", params.q);
+      if (params?.desde) sp.set("desde", params.desde);
+      if (params?.hasta) sp.set("hasta", params.hasta);
+      return fetchJson<any[]>(`/api/feriados?${sp}`);
+    },
+    delete: (id: number) =>
+      fetchJson<any>(`/api/feriados?id=${id}`, { method: "DELETE" }),
     create: (data: { fecha: string; motivo: string }) =>
       fetchJson<any>("/api/feriados", { method: "POST", body: JSON.stringify(data) }),
   },

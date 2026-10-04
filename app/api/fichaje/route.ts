@@ -83,12 +83,8 @@ export async function POST(req: Request) {
         fin: { gte: hoy },
       },
     });
-    if (reposo) {
-      return NextResponse.json({
-        msg: `${empleado.nombre} ${empleado.apellido} está de REPOSO MÉDICO hasta el ${reposo.fin.toISOString().slice(0, 10)}. No debe marcar.`,
-        tipo: "reposo_medico"
-      }, { status: 403 });
-    }
+    // Reposo, vacaciones o feriado: se marca directo según la clase del día
+    const esClaseEspecial = (e: string) => e === "FERIADO" || e === "VACACIONES" || e === "REPOSO_MEDICO";
 
     // Verificar cooldown por empleado
     const ultimaAsistencia = await prisma.asistencia.findFirst({
@@ -122,7 +118,7 @@ export async function POST(req: Request) {
       let estadoSalida: "COMPLETADO" | "TEMPRANO" = "COMPLETADO";
       let extrasH = 0;
 
-      if (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") {
+      if (esClaseEspecial(ultimaAsistencia.estadoEntrada)) {
         // No aplica regla de salida; todo el tiempo trabajado es extra
         estadoSalida = "COMPLETADO";
         const entradaTime = ultimaAsistencia.entrada ? ultimaAsistencia.entrada.getTime() : nowVE.getTime();
@@ -148,8 +144,8 @@ export async function POST(req: Request) {
       await audit("FICHAJE_SALIDA", `Salida registrada para ${empleado.cedula} (${estadoSalida})`);
 
       return NextResponse.json({
-        msg: `Salida registrada — ${estadoSalida === "COMPLETADO" && (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") ? ultimaAsistencia.estadoEntrada : estadoSalida}`,
-        tipo: (ultimaAsistencia.estadoEntrada === "FERIADO" || ultimaAsistencia.estadoEntrada === "VACACIONES") ? "completado" : (estadoSalida === "TEMPRANO" ? "temprano" : "completado"),
+        msg: `Salida registrada — ${estadoSalida === "COMPLETADO" && esClaseEspecial(ultimaAsistencia.estadoEntrada) ? ultimaAsistencia.estadoEntrada : estadoSalida}`,
+        tipo: esClaseEspecial(ultimaAsistencia.estadoEntrada) ? "completado" : (estadoSalida === "TEMPRANO" ? "temprano" : "completado"),
         extras: extrasH
       });
     }
@@ -192,6 +188,26 @@ export async function POST(req: Request) {
       return NextResponse.json({
         msg: `Entrada registrada — VACACIONES`,
         tipo: "vacaciones"
+      });
+    }
+
+    // Reposo médico: entrada directa como REPOSO_MEDICO
+    if (reposo) {
+      await prisma.asistencia.create({
+        data: {
+          empleadoId: empleado.id,
+          fecha: hoy,
+          entrada: nowVE,
+          estadoEntrada: "REPOSO_MEDICO",
+          reglaId: regla.id,
+        },
+      });
+
+      await audit("FICHAJE_ENTRADA", `Entrada registrada para ${empleado.cedula} (REPOSO_MEDICO)`);
+
+      return NextResponse.json({
+        msg: `Entrada registrada — REPOSO MÉDICO`,
+        tipo: "reposo_medico"
       });
     }
 

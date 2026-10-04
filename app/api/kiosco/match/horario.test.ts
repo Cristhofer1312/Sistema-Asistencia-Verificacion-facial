@@ -117,12 +117,16 @@ describe('executeFichaje — validaciones de horario', () => {
       expect(r.tipo).toBe('vacaciones');
     });
 
-    it('reposo vigente → bloquea sin crear asistencia', async () => {
+    it('reposo vigente → marca directo REPOSO_MEDICO', async () => {
       setupBase({ reposo: { fin: new Date('2026-06-20'), motivo: 'gripe' } });
-      const { now, hoy } = atHour(7, 30);
+      const { now, hoy } = atHour(10, 30);
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('reposo_medico');
-      expect(mockPrisma.asistencia.create).not.toHaveBeenCalled();
+      expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ estadoEntrada: 'REPOSO_MEDICO' }),
+        })
+      );
     });
   });
 
@@ -177,6 +181,50 @@ describe('executeFichaje — validaciones de horario', () => {
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('completado');
       expect(r.extrasH).toBeCloseTo(4, 5);
+    });
+  });
+
+  describe('auto-marcas y anuladas', () => {
+    it('escaneo sobre fila VACACIONES sin marcaje → completa entrada sin crear (sin P2002)', async () => {
+      setupBase({
+        vacacion: { inicio: new Date(), fin: new Date() },
+        asistencia: { id: 9, entrada: null, salida: null, estadoEntrada: 'VACACIONES' },
+      });
+      const { now, hoy } = atHour(7, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('vacaciones');
+      expect(mockPrisma.asistencia.create).not.toHaveBeenCalled();
+      expect(mockPrisma.asistencia.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 9 },
+          data: expect.objectContaining({ entrada: now, reglaId: 7 }),
+        })
+      );
+    });
+
+    it('escaneo sobre fila FERIADO sin marcaje → completa entrada conservando FERIADO', async () => {
+      setupBase({
+        feriado: { fecha: new Date(), motivo: 'Fiesta' },
+        asistencia: { id: 10, entrada: null, salida: null, estadoEntrada: 'FERIADO' },
+      });
+      const { now, hoy } = atHour(7, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('feriado');
+      expect(mockPrisma.asistencia.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('anuladas ignoradas por el kiosco', () => {
+    it('consulta vacaciones y reposos solo no anuladas', async () => {
+      setupBase();
+      const { now, hoy } = atHour(7, 30);
+      await executeFichaje(1, now, hoy);
+      expect(mockPrisma.vacacionEmpleado.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ anulada: false }) })
+      );
+      expect(mockPrisma.reposoMedico.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ anulada: false }) })
+      );
     });
   });
 

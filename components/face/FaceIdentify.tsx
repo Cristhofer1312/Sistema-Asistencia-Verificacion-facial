@@ -5,7 +5,6 @@ import * as faceapi from '@vladmandic/face-api';
 import { 
   loadFaceApiModels, 
   FACE_API_CONFIG, 
-  calculateEAR, 
   estimateHeadPose, 
   generateFacePreview,
   estimateBrightness
@@ -20,9 +19,22 @@ interface FaceQualityData {
   allOk: boolean;
 }
 
+interface ChallengeStep {
+  step: string; // "IZQUIERDA" | "DERECHA" | "FRENTE"
+  completed: boolean;
+}
+
 interface LivenessQualityData {
-  blink: boolean;
   move: boolean;
+  step: string;
+  stepIndex: number;
+  totalSteps: number;
+}
+
+interface SeriesPoint {
+  yaw: number;
+  pitch: number;
+  t: number;
 }
 
 interface MatchResult {
@@ -43,20 +55,20 @@ interface FaceIdentifyProps {
   onUnknown: () => void;
   onCooldown: (minutos: number) => void;
   onError?: (msg: string) => void;
-  onQualityChange?: (q: FaceQualityData) => void;
+  onQualityChange?: (q: any) => void;
   onLivenessChange?: (q: LivenessQualityData) => void;
 }
 
-const LIVENESS_EAR_THRESHOLD = 0.25;
-const LIVENESS_POSE_THRESHOLD = 20;
-const MIN_BLINK_FRAMES = 1;
 const INFERENCE_INTERVAL_MS = 1000;
+const YAW_THRESHOLD = 12;
+const PITCH_THRESHOLD = 12;
 
 type IdentifyState = 
   | 'loading_models' 
   | 'starting_camera' 
   | 'scanning' 
-  | 'liveness_check' 
+  | 'challenge_requested' 
+  | 'challenge_active' 
   | 'matching' 
   | 'success' 
   | 'multi_face' 
@@ -73,12 +85,18 @@ export function FaceIdentify({
   const [state, setState] = useState<IdentifyState>('loading_models');
   const [message, setMessage] = useState('');
   const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [challengeSteps, setChallengeSteps] = useState<{ step: string; completed: boolean }[]>([]);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
   
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const blinkStateRef = useRef({ framesBelow: 0, blinked: false });
   const stateRef = useRef<IdentifyState>('loading_models');
   const matchingRef = useRef(false);
+  const challengeIdRef = useRef<string | null>(null);
+  const seriesRef = useRef<{ yaw: number; pitch: number; t: number }[]>([]);
+  const challengeStartTimeRef = useRef<number>(0);
+  const currentStepRef = useRef<string | null>(null);
+  const stepStartTimeRef = useRef<number>(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -120,11 +138,53 @@ export function FaceIdentify({
     }
   };
 
+  const requestChallenge = async () => {
+    try {
+      const result = await api.kiosco.challenge();
+      challengeIdRef.current = result.challengeId;
+      setChallengeSteps(result.steps.map(s => ({ step: s, completed: false })));
+      setCurrentStepIndex(0);
+      seriesRef.current = [];
+      challengeStartTimeRef.current = Date.now();
+      setState('challenge_active');
+      updateChallengeUI();
+    } catch (e: any) {
+      onError?.('Error solicitando challenge: ' + (e.data?.error ?? e.message));
+      setState('error');
+    }
+  };
+
+  const resetChallenge = () => {
+    challengeIdRef.current = null;
+    setChallengeSteps([]);
+    setCurrentStepIndex(0);
+    seriesRef.current = [];
+    challengeStartTimeRef.current = 0;
+  };
+
+  const updateChallengeUI = () => {
+    const step = challengeSteps[currentStepIndex];
+    if (!step) return;
+    const labels: Record<string, string> = {
+      'IZQUIERDA': 'Gire a la IZQUIERDA ←',
+      'DERECHA': 'Gire a la DERECHA →',
+      'FRENTE': 'Mire al FRENTE ●',
+    };
+    setMessage(labels[challengeSteps[currentStepIndex]?.step] || 'Gire la cabeza');
+    setChallengeSteps(prev => prev.map((s, i) => ({ ...s, completed: i < currentStepIndex })));
+    onLivenessChange?.({
+      move: true,
+      step: challengeSteps[currentStepIndex]?.step || '',
+      stepIndex: currentStepIndex,
+      totalSteps: challengeSteps.length,
+    });
+  };
+
   const startInferenceLoop = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     
     intervalRef.current = setInterval(async () => {
-      if (stateRef.current !== 'scanning' && stateRef.current !== 'liveness_check') return;
+      if (stateRef.current !== 'scanning' && stateRef.current !== 'challenge_active') return;
 
       const videoEl = videoRef.current;
       if (!videoEl || videoEl.readyState !== videoEl.HAVE_ENOUGH_DATA) return;
@@ -207,26 +267,77 @@ export function FaceIdentify({
           }
         }
         
-        if (stateRef.current === 'scanning') {
-          const livenessOk = checkLiveness(det);
-          const blink = blinkStateRef.current.blinked;
-          const move = Math.abs(pose.yaw) > 5 || Math.abs(pose.pitch) > 5;
-          onLivenessChange?.({ blink, move });
-          if (!livenessOk) {
-            setState('liveness_check');
-            setMessage('Parpadee y mueva la cabeza ligeramente');
-            return;
-          }
-          setState('matching');
+        // Liveness: solo pose (movimiento de cabeza)
+        const move = Math.abs(pose.yaw) > 5 || Math.abs(pose.pitch) > 5;
+        
+        // Registrar serie para challenge
+        if (stateRef.current === 'challenge_active') {
+          const now = Date.now();
+          seriesRef.current.push({ yaw: pose.yaw, pitch: pose.pitch, t: now - challengeStartTimeRef.current });
         }
 
+        // Máquina de estados
+        if (stateRef.current === 'scanning') {
+          if (move) {
+            // Calidad OK + movimiento detectado -> pedir challenge
+            setState('challenge_requested');
+            setMessage('Solicitando desafío…');
+            await requestChallenge();
+            return;
+          }
+        } else if (stateRef.current === 'challenge_active') {
+          // Verificar paso actual del challenge
+          const step = challengeSteps[currentStepIndex];
+          if (!step || step.completed) {
+            // Paso ya completado, verificar siguiente
+            const nextIdx = challengeSteps.findIndex(s => !s.completed);
+            if (nextIdx >= 0 && nextIdx !== currentStepIndex) {
+              setCurrentStepIndex(nextIdx);
+              updateChallengeUI();
+            } else if (nextIdx < 0) {
+              // Todos los pasos completados
+              setState('matching');
+            }
+            updateChallengeUI();
+            return;
+          }
+
+          // Verificar si el paso actual se cumple
+          const expected = step.step;
+          let stepOk = false;
+          if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -12;
+          else if (expected === 'DERECHA') stepOk = pose.yaw >= 12;
+          else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) < 8 && Math.abs(pose.pitch) < 8;
+
+          if (stepOk) {
+            // Paso completado
+            setChallengeSteps(prev => {
+              const next = [...prev];
+              next[currentStepIndex] = { ...next[currentStepIndex], completed: true };
+              return next;
+            });
+            setCurrentStepIndex(prev => prev + 1);
+            
+            // Verificar si quedan pasos
+            const nextIdx = challengeSteps.findIndex((s, i) => !s.completed && i > currentStepIndex);
+            if (nextIdx >= 0) {
+              setCurrentStepIndex(nextIdx);
+            } else {
+              // Challenge completo
+              setState('matching');
+              return;
+            }
+            updateChallengeUI();
+          }
+        }
+        
         if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
           matchingRef.current = true;
           try {
             const descriptor = Array.from(det.descriptor as Float32Array);
             const quality = {
-              earOk: blinkStateRef.current.blinked,
-              poseOk: Math.abs(pose.yaw) > 5 || Math.abs(pose.pitch) > 5,
+              earOk: true, // parpadeo ya no es requisito
+              poseOk: move,
               brightness: Math.round(brightness),
               centered,
               distance,
@@ -234,7 +345,14 @@ export function FaceIdentify({
             const nonce = crypto.randomUUID();
             const timestamp = Date.now();
 
-            const result = await api.kiosco.match({ descriptor, quality, nonce, timestamp });
+            const result = await api.kiosco.match({ 
+              descriptor, 
+              quality, 
+              nonce, 
+              timestamp,
+              challengeId: challengeIdRef.current ?? undefined,
+              series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
+            });
 
             if (result.ok) {
               setState('success');
@@ -249,6 +367,7 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
                 matchingRef.current = false;
+                resetChallenge();
               }, 3000);
             } else if (result.tipo === 'cooldown') {
               const min = result.error?.match(/(\d+)/)?.[1] ?? '30';
@@ -261,6 +380,7 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
                 matchingRef.current = false;
+                resetChallenge();
               }, 3000);
             } else if (result.tipo === 'duplicado') {
               setState('unknown');
@@ -272,6 +392,7 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
                 matchingRef.current = false;
+                resetChallenge();
               }, 5000);
             } else if (result.tipo === 'fuera_de_margen') {
               setState('unknown');
@@ -283,6 +404,19 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
                 matchingRef.current = false;
+                resetChallenge();
+              }, 10000);
+            } else if (result.tipo === 'bad_challenge') {
+              setState('unknown');
+              setMessage(result.error ?? 'Desafío inválido');
+              onUnknown();
+              setTimeout(() => {
+                if (stateRef.current === 'unknown') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+                matchingRef.current = false;
+                resetChallenge();
               }, 10000);
             } else {
               setState('unknown');
@@ -294,6 +428,7 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
                 matchingRef.current = false;
+                resetChallenge();
               }, 10000);
             }
           } catch (e: any) {
@@ -305,26 +440,31 @@ export function FaceIdentify({
               setMessage(e.data?.error ?? 'Datos inválidos');
               onUnknown();
               matchingRef.current = false;
+              resetChallenge();
             } else if (e.status === 404) {
               setState('unknown');
               setMessage('Rostro no reconocido');
               onUnknown();
               matchingRef.current = false;
+              resetChallenge();
             } else if (e.status === 409) {
               setState('unknown');
               setMessage('Intento repetido');
               onUnknown();
               matchingRef.current = false;
+              resetChallenge();
             } else if (e.status === 429) {
               const min = e.data?.error?.match(/(\d+)/)?.[1] ?? '30';
               setState('cooldown');
               setMessage(`Ya marcó. Espere ${min} min`);
               onCooldown(parseInt(min));
               matchingRef.current = false;
+              resetChallenge();
             } else {
               console.error('[FaceIdentify] Error match:', e);
               onError?.('Error en el servidor: ' + (e.data?.error ?? e.message));
               matchingRef.current = false;
+              resetChallenge();
             }
           }
         }
@@ -332,28 +472,6 @@ export function FaceIdentify({
         console.error('[FaceIdentify] Error inferencia:', e);
       }
     }, INFERENCE_INTERVAL_MS);
-  };
-
-  const checkLiveness = (det: any): boolean => {
-    const landmarks = det.landmarks;
-    
-    const leftEye = landmarks.getLeftEye();
-    const rightEye = landmarks.getRightEye();
-    const ear = (calculateEAR(leftEye) + calculateEAR(rightEye)) / 2;
-    
-    if (ear < LIVENESS_EAR_THRESHOLD) {
-      blinkStateRef.current.framesBelow++;
-      if (blinkStateRef.current.framesBelow >= MIN_BLINK_FRAMES) {
-        blinkStateRef.current.blinked = true;
-      }
-    } else {
-      blinkStateRef.current.framesBelow = 0;
-    }
-
-    const pose = estimateHeadPose(landmarks);
-    const poseOk = Math.abs(pose.yaw) > 5 || Math.abs(pose.pitch) > 5;
-    
-    return blinkStateRef.current.blinked && poseOk;
   };
 
   useEffect(() => {
@@ -399,7 +517,8 @@ export function FaceIdentify({
         {state === 'loading_models' && ' Cargando modelos…'}
         {state === 'starting_camera' && ' Iniciando cámara…'}
         {state === 'scanning' && ' Escaneando…'}
-        {state === 'liveness_check' && ' Parpadee y mueva la cabeza'}
+        {state === 'challenge_requested' && ' Solicitando desafío…'}
+        {state === 'challenge_active' && message}
         {state === 'matching' && ' Comparando…'}
         {state === 'success' && ' Registrado'}
         {state === 'multi_face' && ' Solo una persona'}

@@ -241,6 +241,7 @@ enum AccionAuditoria {
   MATCH_KIOSCO_UNKNOWN
   MATCH_KIOSCO_REPLAY
   MATCH_KIOSCO_BAD_QUALITY
+  MATCH_KIOSCO_BAD_CHALLENGE
 }
 
 model LogAuditoria {
@@ -266,4 +267,17 @@ model KioscoNonce {
   usadoEn   DateTime @default(now())
   expiraEn  DateTime
   @@index([expiraEn])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 12. Challenge Kiosco (anti-video replay por challenge-response)
+// ─────────────────────────────────────────────────────────────
+model KioscoChallenge {
+  id        String   @id @default(cuid())
+  steps     String   // JSON array: ["IZQUIERDA", "DERECHA", "FRENTE"]
+  usado     Boolean  @default(false)
+  expiraEn  DateTime
+  creadoEn  DateTime @default(now())
+  @@index([expiraEn])
+  @@index([usado])
 }

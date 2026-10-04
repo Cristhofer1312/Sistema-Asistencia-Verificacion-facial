@@ -57,8 +57,10 @@ export default function Kiosco() {
     allOk: boolean;
   } | null>(null);
   const [livenessQuality, setLivenessQuality] = useState<{
-    blink: boolean;
     move: boolean;
+    step: string;
+    stepIndex: number;
+    totalSteps: number;
   } | null>(null);
   const [regla, setRegla] = useState<any>(null);
 
@@ -180,9 +182,30 @@ export default function Kiosco() {
               <GuideRow label="Distancia" ok={faceQuality?.distance} hint={faceQuality?.distanceHint} />
               <GuideRow label="Frente + luz" ok={faceQuality?.frontLight} hint={faceQuality?.frontLightHint} />
             </div>
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid rgba(148,163,184,0.2)", display: "flex", gap: 16 }}>
-              <GuideDot label="Parpadeo" ok={livenessQuality?.blink} />
-              <GuideDot label="Movimiento" ok={livenessQuality?.move} />
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid rgba(148,163,184,0.2)" }}>
+              {livenessQuality && livenessQuality.totalSteps > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: ".85rem" }}>
+                    <span style={{ color: "#64748b", minWidth: 80 }}>Desafío</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {Array.from({ length: livenessQuality.totalSteps }, (_, i) => (
+                        <div key={i} style={{ 
+                          width: 12, height: 12, borderRadius: "50%", 
+                          background: i < livenessQuality.stepIndex ? "#10b981" : 
+                                     i === livenessQuality.stepIndex ? "#f59e0b" : "#374151",
+                          border: `2px solid ${i < livenessQuality.stepIndex ? "#10b981" : i === livenessQuality.stepIndex ? "#f59e0b" : "#4b5563"}`,
+                          transition: "all 0.3s"
+                        }} />
+                      ))}
+                    </div>
+                    <span style={{ color: "#fbbf24", fontSize: ".75rem", marginLeft: 8 }}>
+                      {livenessQuality.step} ({livenessQuality.stepIndex + 1}/{livenessQuality.totalSteps})
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <GuideDot label="Movimiento" ok={livenessQuality?.move} />
+              )}
             </div>
             <div style={{ marginTop: 20, padding: 12, borderRadius: 8, background: faceQuality?.allOk ? "rgba(5,150,105,0.2)" : "rgba(217,119,6,0.2)", border: `1px solid ${faceQuality?.allOk ? "#10b981" : "#f59e0b"}` }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>

@@ -115,7 +115,7 @@ export default function Kiosco() {
         extras: data.extrasH,
         previewCanvas: previewCanvasRef.current,
       });
-      setTimeout(() => setLastResult(null), 3000);
+      setTimeout(() => setLastResult(null), 2000);
     } catch (e) {
       setError("Error de conexión con el servidor");
     }
@@ -129,7 +129,7 @@ export default function Kiosco() {
       nombre: empleado ? `${empleado.nombre} ${empleado.apellido}` : "",
       previewCanvas: undefined,
     });
-    setTimeout(() => setLastResult(null), 5000);
+    setTimeout(() => setLastResult(null), 2000);
   };
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);

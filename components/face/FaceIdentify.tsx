@@ -60,7 +60,9 @@ interface FaceIdentifyProps {
 }
 
 const INFERENCE_INTERVAL_MS = 1000;
-const YAW_THRESHOLD = 12;
+// Umbrales suaves: giro leve (±10°) para facilidad de escaneo.
+// FRENTE usa ±14° (ver abajo). La seguridad la da la secuencia ordenada.
+const YAW_THRESHOLD = 10;
 const PITCH_THRESHOLD = 12;
 
 type IdentifyState = 
@@ -223,7 +225,7 @@ export function FaceIdentify({
               setState('scanning');
               setMessage('Escaneando… presente su rostro');
             }
-          }, 5000);
+          }, 2000);
           return;
         }
 
@@ -316,8 +318,8 @@ export function FaceIdentify({
           const expected = step.step;
           let stepOk = false;
           console.log(`[Kiosco] yaw=${pose.yaw.toFixed(1)}° pitch=${pose.pitch.toFixed(1)}° esperando ${expected} (${idx + 1}/${steps.length})`);
-          if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -12;
-          else if (expected === 'DERECHA') stepOk = pose.yaw >= 12;
+          if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -YAW_THRESHOLD;
+          else if (expected === 'DERECHA') stepOk = pose.yaw >= YAW_THRESHOLD;
           // FRENTE con margen amplio: la estimación de pose tiene sesgo y un
           // rostro de frente real suele leer ±8-14°. La seguridad la da la
           // secuencia ordenada, no la precisión del frente.
@@ -376,7 +378,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 3000);
+              }, 2000);
             } else if (result.tipo === 'cooldown') {
               const min = result.error?.match(/(\d+)/)?.[1] ?? '30';
               setState('cooldown');
@@ -389,7 +391,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 3000);
+              }, 2000);
             } else if (result.tipo === 'duplicado') {
               setState('unknown');
               setMessage(result.error ?? 'Ya ha registrado su entrada y salida por hoy');
@@ -401,7 +403,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 5000);
+              }, 2000);
             } else if (result.tipo === 'fuera_de_margen') {
               setState('unknown');
               setMessage(result.error ?? 'Fuera de horario — requiere autorización');
@@ -413,7 +415,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 10000);
+              }, 2000);
             } else if (result.tipo === 'bad_challenge') {
               setState('unknown');
               setMessage(result.error ?? 'Desafío inválido');
@@ -425,7 +427,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 10000);
+              }, 2000);
             } else {
               setState('unknown');
               setMessage('Rostro no reconocido');
@@ -437,7 +439,7 @@ export function FaceIdentify({
                 }
                 matchingRef.current = false;
                 resetChallenge();
-              }, 10000);
+              }, 2000);
             }
           } catch (e: any) {
             console.log('[Kiosco] error match:', e?.status, e?.data?.error ?? e?.message);
@@ -450,18 +452,36 @@ export function FaceIdentify({
               onUnknown();
               matchingRef.current = false;
               resetChallenge();
+              setTimeout(() => {
+                if (stateRef.current === 'unknown') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+              }, 2000);
             } else if (e.status === 404) {
               setState('unknown');
               setMessage('Rostro no reconocido');
               onUnknown();
               matchingRef.current = false;
               resetChallenge();
+              setTimeout(() => {
+                if (stateRef.current === 'unknown') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+              }, 2000);
             } else if (e.status === 409) {
               setState('unknown');
               setMessage('Intento repetido');
               onUnknown();
               matchingRef.current = false;
               resetChallenge();
+              setTimeout(() => {
+                if (stateRef.current === 'unknown') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+              }, 2000);
             } else if (e.status === 429) {
               const min = e.data?.error?.match(/(\d+)/)?.[1] ?? '30';
               setState('cooldown');
@@ -469,6 +489,12 @@ export function FaceIdentify({
               onCooldown(parseInt(min));
               matchingRef.current = false;
               resetChallenge();
+              setTimeout(() => {
+                if (stateRef.current === 'cooldown') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+              }, 2000);
             } else {
               console.error('[FaceIdentify] Error match:', e);
               onError?.('Error en el servidor: ' + (e.data?.error ?? e.message));

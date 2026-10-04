@@ -10,7 +10,7 @@ const KIOSCO_KEY = process.env.API_KIOSCO_KEY ?? "";
 const NONCE_TTL_MS = 2 * 60 * 1000; // 2 min
 const TIMESTAMP_WINDOW_MS = 60 * 1000; // ±60s
 const CHALLENGE_MAX_DURATION_MS = 15 * 1000; // 15s máx para completar el challenge
-const YAW_THRESHOLD = 12; // grados mínimos por dirección
+const YAW_THRESHOLD = 10; // giro leve: mismos ±10° que el cliente (facilidad de escaneo)
 
 interface QualityData {
   earOk: boolean; // compatibilidad: ya no bloquea (parpadeo eliminado)

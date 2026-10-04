@@ -106,8 +106,19 @@ export default function Kiosco() {
         return;
       }
 
-      // El match endpoint ya hizo el fichaje; usar su respuesta directamente
-      const isEntrada = data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones" || data.tipo === "reposo_medico";
+      // El match endpoint ya hizo el fichaje; usar su respuesta directamente.
+      // reposo_medico se muestra como advertencia (antes era 403 → warn).
+      if (data.tipo === "reposo_medico") {
+        setLastResult({
+          tipo: "warn",
+          estado: data.msg,
+          nombre: `${data.nombre} ${data.apellido}`,
+          previewCanvas: previewCanvasRef.current,
+        });
+        setTimeout(() => setLastResult(null), 2000);
+        return;
+      }
+      const isEntrada = data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones";
       setLastResult({
         tipo: isEntrada ? "entrada" : "salida",
         estado: data.msg,

@@ -47,7 +47,7 @@ function LoginForm() {
         redirect: false,
       });
       if (!res || res.error) {
-        setError("Credenciales inválidas o usuario inactivo.");
+        setError(res?.error && res.error !== "CredentialsSignin" ? res.error : "Credenciales inválidas o usuario inactivo.");
         return;
       }
       // Refrescar sesión del servidor y redirigir según claveInicial

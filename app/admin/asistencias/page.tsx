@@ -79,14 +79,14 @@ export default function Asistencias() {
   async function cargarDatos() {
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
-    
+
     setLoading(true);
     setError(null);
     try {
       const [emps, asis] = await Promise.all([
         api.empleados.list() as Promise<Empleado[]>,
-        fetch(`/api/asistencias?desde=${desde}&hasta=${hasta}${filtroGerenciaId !== "Todas" ? `&gerenciaId=${filtroGerenciaId}` : ""}${filtroEstado !== "Todos" ? `&estado=${encodeURIComponent(filtroEstado)}` : ""}`, { 
-          signal: abortRef.current.signal 
+        fetch(`/api/asistencias?desde=${desde}&hasta=${hasta}${filtroGerenciaId !== "Todas" ? `&gerenciaId=${filtroGerenciaId}` : ""}${filtroEstado !== "Todos" ? `&estado=${encodeURIComponent(filtroEstado)}` : ""}`, {
+          signal: abortRef.current.signal
         }).then(r => r.json()),
       ]);
       setEmpleados(emps);
@@ -173,10 +173,10 @@ export default function Asistencias() {
       <div className="row-between" style={{ marginBottom: 20 }}>
         <div>
           <h2 style={{ marginBottom: 4 }}>Crear pase</h2>
-          <p className="muted">Vista proyectada con FALTA / FERIADO / VACACIONES · {filasFiltradas.length} registros</p>
+          <p className="muted">{filasFiltradas.length} registros</p>
         </div>
         <button className="btn btn-primary" onClick={() => setPase({ empleadoId: 0, fecha: getHoyVE(), motivo: "", cedula: "", nombre: "" })}>
-           Crear pase previo
+          Crear pase previo
         </button>
       </div>
 
@@ -232,7 +232,7 @@ export default function Asistencias() {
                           title={dia < getHoyVE() ? "No se pueden crear pases para fechas pasadas" : undefined}
                           onClick={() => setPase({ empleadoId: emp.id, fecha: dia, motivo: "", cedula: emp.cedula, nombre: nombreCompleto(emp) })}
                         >
-                           Otorgar pase
+                          Otorgar pase
                         </button>
                       </td>
                     </tr>
@@ -248,86 +248,86 @@ export default function Asistencias() {
       )}
 
       {vista === "historial" && (<>
-      {/* Filters */}
-      <div className="filter-bar" style={{ marginBottom: 20 }}>
-        <div className="filter-row">
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label>Desde</label>
-            <input type="date" value={desde} onChange={e => setDesde(e.target.value)} />
-          </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label>Hasta</label>
-            <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} />
-          </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label>Gerencia</label>
-            <Select value={filtroGerenciaId} onChange={e => setFiltroGerenciaId(e.target.value)}>
-              {gerencias.map(g => <option key={g.id} value={g.id === 0 ? "Todas" : g.id}>{g.nombre}</option>)}
-            </Select>
-          </div>
-          <div className="form-group" style={{ flex: "2 1 200px" }}>
-            <label>Estado (8 estados)</label>
-            <div className="row" style={{ gap: 5, flexWrap: "wrap" }}>
-              {ESTADOS_FILTRO.map(s => (
-                <button
-                  key={s}
-                  className={"preset-btn" + (filtroEstado === s ? " active" : "")}
-                  onClick={() => setFiltroEstado(s)}
-                >
-                  {s}
-                </button>
-              ))}
+        {/* Filters */}
+        <div className="filter-bar" style={{ marginBottom: 20 }}>
+          <div className="filter-row">
+            <div className="form-group" style={{ flex: "1 1 140px" }}>
+              <label>Desde</label>
+              <input type="date" value={desde} onChange={e => setDesde(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ flex: "1 1 140px" }}>
+              <label>Hasta</label>
+              <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ flex: "1 1 140px" }}>
+              <label>Gerencia</label>
+              <Select value={filtroGerenciaId} onChange={e => setFiltroGerenciaId(e.target.value)}>
+                {gerencias.map(g => <option key={g.id} value={g.id === 0 ? "Todas" : g.id}>{g.nombre}</option>)}
+              </Select>
+            </div>
+            <div className="form-group" style={{ flex: "2 1 200px" }}>
+              <label>Estado (8 estados)</label>
+              <div className="row" style={{ gap: 5, flexWrap: "wrap" }}>
+                {ESTADOS_FILTRO.map(s => (
+                  <button
+                    key={s}
+                    className={"preset-btn" + (filtroEstado === s ? " active" : "")}
+                    onClick={() => setFiltroEstado(s)}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Empleado</th>
-                <th>Fecha</th>
-                <th>Entrada / Salida</th>
-                <th>Estado</th>
-                <th>Extras</th>
-                <th>Acción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filasFiltradas.map((f, i) => (
-                <tr key={i}>
-                  <td>
-                    <a href={`/admin/empleados/${f.empleado.cedula}`} style={{ fontWeight: 600 }}>
-                      {nombreCompleto(f.empleado)}
-                    </a>
-                  </td>
-                  <td className="mono" style={{ color: "var(--muted)" }}>{f.fecha}</td>
-                  <td className="mono">{f.entrada ?? "—"} / {f.salida ?? "—"}</td>
-                  <td><BadgeEstadoEntrada estadoEntrada={f.estadoEntrada} estadoOriginal={f.estadoOriginal} /></td>
-                  <td>
-                    {f.extrasH > 0
-                      ? <span style={{ color: "var(--ok)", fontWeight: 600 }}>{formatExtras(f.extrasH)}</span>
-                      : <span className="muted">—</span>
-                    }
-                  </td>
-                  <td>
-                    {(f.estadoEntrada === "TARDE" || f.estadoEntrada === "FALTA" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal)) ? (
-                      <button className="btn btn-sm btn-warn-outline" onClick={() => setJust({ empleadoId: f.empleadoId, fecha: f.fecha, estado: f.estadoEntrada, cedula: f.empleado.cedula, justificacionDoc: "", justificacionObs: "" })}>
-                         {f.estadoEntrada === "JUSTIFICADO" ? "Ver justificación" : "Justificar"}
-                      </button>
-                    ) : (
-                      <span className="muted" style={{ fontSize: ".8rem" }}>—</span>
-                    )}
-                  </td>
+        {/* Table */}
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="table-wrap" style={{ border: "none" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Empleado</th>
+                  <th>Fecha</th>
+                  <th>Entrada / Salida</th>
+                  <th>Estado</th>
+                  <th>Extras</th>
+                  <th>Acción</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filasFiltradas.map((f, i) => (
+                  <tr key={i}>
+                    <td>
+                      <a href={`/admin/empleados/${f.empleado.cedula}`} style={{ fontWeight: 600 }}>
+                        {nombreCompleto(f.empleado)}
+                      </a>
+                    </td>
+                    <td className="mono" style={{ color: "var(--muted)" }}>{f.fecha}</td>
+                    <td className="mono">{f.entrada ?? "—"} / {f.salida ?? "—"}</td>
+                    <td><BadgeEstadoEntrada estadoEntrada={f.estadoEntrada} estadoOriginal={f.estadoOriginal} /></td>
+                    <td>
+                      {f.extrasH > 0
+                        ? <span style={{ color: "var(--ok)", fontWeight: 600 }}>{formatExtras(f.extrasH)}</span>
+                        : <span className="muted">—</span>
+                      }
+                    </td>
+                    <td>
+                      {(f.estadoEntrada === "TARDE" || f.estadoEntrada === "FALTA" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal)) ? (
+                        <button className="btn btn-sm btn-warn-outline" onClick={() => setJust({ empleadoId: f.empleadoId, fecha: f.fecha, estado: f.estadoEntrada, cedula: f.empleado.cedula, justificacionDoc: "", justificacionObs: "" })}>
+                          {f.estadoEntrada === "JUSTIFICADO" ? "Ver justificación" : "Justificar"}
+                        </button>
+                      ) : (
+                        <span className="muted" style={{ fontSize: ".8rem" }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
       </>)}
 
       {/* Modal justificar */}

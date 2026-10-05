@@ -23,13 +23,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   }
 
-  const { horaLimite, horaReferencia, margenMin, cooldownMin, vigenciaDesde } = await req.json();
+  const { horaEntrada, horaLimite, horaReferencia, cooldownMin, vigenciaDesde } = await req.json();
 
-  if (margenMin < 0) {
-    return NextResponse.json({ error: "El margen debe ser mayor o igual a 0" }, { status: 400 });
+  if (!horaEntrada || !horaLimite || !horaReferencia) {
+    return NextResponse.json({ error: "Hora de entrada, hora límite y referencia son obligatorias (HH:MM)" }, { status: 400 });
   }
   if (cooldownMin < 0) {
     return NextResponse.json({ error: "El cooldown debe ser mayor o igual a 0" }, { status: 400 });
+  }
+  if (parseTime(horaEntrada) > parseTime(horaLimite)) {
+    return NextResponse.json({ error: "La hora de entrada debe ser anterior o igual a la hora límite" }, { status: 400 });
   }
   if (parseTime(horaLimite) >= parseTime(horaReferencia)) {
     return NextResponse.json({ error: "La hora límite debe ser anterior a la hora de referencia" }, { status: 400 });
@@ -38,16 +41,16 @@ export async function POST(req: Request) {
   try {
     const regla = await prisma.reglaAsistencia.create({
       data: {
+        horaEntrada,
         horaLimite,
         horaReferencia,
-        margenMin,
         cooldownMin,
         vigenciaDesde: new Date(vigenciaDesde),
         creadoPorId: Number((session.user as any).id)
       }
     });
 
-    await audit("CREAR_REGLA", `Nueva regla: ${horaLimite}-${horaReferencia} (Margen: ${margenMin}m)`, { usuarioId: Number((session.user as any).id) });
+    await audit("CREAR_REGLA", `Nueva regla: entrada ${horaEntrada} · límite ${horaLimite} · ref ${horaReferencia}`, { usuarioId: Number((session.user as any).id) });
     return NextResponse.json(regla, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: "Error creando regla" }, { status: 500 });

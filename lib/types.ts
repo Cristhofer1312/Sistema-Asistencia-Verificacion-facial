@@ -39,9 +39,9 @@ export interface Empleado {
 
 export interface ReglaAsistencia {
   id: number;
+  horaEntrada: string;
   horaLimite: string;
   horaReferencia: string;
-  margenMin: number;
   cooldownMin: number;
   vigenciaDesde: string;
   creadoPorId: number | null;
@@ -51,7 +51,7 @@ export interface ReglaAsistencia {
 // Alias for backward compatibility
 export type Regla = ReglaAsistencia;
 
-export type EstadoEntrada = 'A_TIEMPO' | 'TARDE' | 'FALTA' | 'JUSTIFICADO' | 'FERIADO' | 'VACACIONES' | 'REPOSO_MEDICO';
+export type EstadoEntrada = 'A_TIEMPO' | 'TEMPRANO' | 'TARDE' | 'FALTA' | 'JUSTIFICADO' | 'FERIADO' | 'VACACIONES' | 'REPOSO_MEDICO';
 export type EstadoSalida = 'COMPLETADO' | 'TEMPRANO';
 
 export type Rango = 'hoy' | 'ayer' | 'semana';
@@ -67,7 +67,7 @@ export interface Asistencia {
   estadoSalida: EstadoSalida | null;
   extrasH: number;
   reglaId: number | null;
-  regla?: { horaLimite: string; horaReferencia: string; margenMin: number } | null;
+  regla?: { horaEntrada: string; horaLimite: string; horaReferencia: string } | null;
   justificacionDoc: string | null;
   justificacionObs: string | null;
   autorizadorId: number | null;
@@ -96,6 +96,25 @@ export interface VacacionEmpleado {
 
 export type TipoPase = 'PASE_NORMAL' | 'JUSTIFICACION_ANTICIPADA';
 
+export interface PermisoEstudiantil {
+  id: number;
+  empleadoId: number;
+  diasSemana: number[]; // 0=Dom..6=Sáb
+  horaLimite: string; // "HH:MM" — siempre > regla general
+  validoDesde: string;
+  validoHasta: string;
+  motivo: string | null;
+  activo: boolean;
+  creadoPorId: number | null;
+  creadoEn: string;
+  empleado?: Pick<Empleado, 'nombre' | 'apellido' | 'cedula' | 'gerenciaId'>;
+}
+
+export const DIAS_SEMANA_CORTO = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'] as const;
+
+export function diasSemanaLabel(dias: number[]): string {
+  return [...dias].sort((a, b) => a - b).map(d => DIAS_SEMANA_CORTO[d] ?? d).join(' · ');
+}
 export interface PasePrevio {
   id: number;
   empleadoId: number;
@@ -157,7 +176,7 @@ export {
 } from './date-utils';
 
 // Helpers UI
-export const ESTADOS_ENTRADA: EstadoEntrada[] = ['A_TIEMPO', 'TARDE', 'FALTA', 'JUSTIFICADO', 'FERIADO', 'VACACIONES', 'REPOSO_MEDICO'];
+export const ESTADOS_ENTRADA: EstadoEntrada[] = ['A_TIEMPO', 'TEMPRANO', 'TARDE', 'FALTA', 'JUSTIFICADO', 'FERIADO', 'VACACIONES', 'REPOSO_MEDICO'];
 export const ESTADOS_SALIDA: EstadoSalida[] = ['COMPLETADO', 'TEMPRANO'];
 export const TODOS_ESTADOS = [...ESTADOS_ENTRADA, ...ESTADOS_SALIDA];
 

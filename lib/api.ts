@@ -45,6 +45,21 @@ export const api = {
       fetchJson("/api/pase-previo", { method: "POST", body: JSON.stringify(data) }),
   },
 
+  // Permisos estudiantiles (extensión de hora límite por día de semana)
+  permisosEstudio: {
+    list: (params?: { empleadoId?: number; activo?: boolean }) => {
+      const sp = new URLSearchParams();
+      if (params?.empleadoId) sp.set("empleadoId", String(params.empleadoId));
+      if (params?.activo !== undefined) sp.set("activo", String(params.activo));
+      return fetchJson<any[]>(`/api/permisos-estudio?${sp}`);
+    },
+    create: (data: { empleadoId: number; diasSemana: number[]; horaLimite: string; validoDesde: string; validoHasta: string; motivo?: string }) =>
+      fetchJson<any>("/api/permisos-estudio", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: number, data: { diasSemana?: number[]; horaLimite?: string; validoDesde?: string; validoHasta?: string; motivo?: string | null; activo?: boolean }) =>
+      fetchJson<any>(`/api/permisos-estudio/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    delete: (id: number) =>
+      fetchJson<any>(`/api/permisos-estudio/${id}`, { method: "DELETE" }),
+  },
   // Vacaciones
   vacaciones: {
     list: (params?: { empleadoId?: number; q?: string; gerenciaId?: number; desde?: string; hasta?: string; estado?: string; situacion?: string }) => {
@@ -105,7 +120,7 @@ export const api = {
   // Reglas
   reglas: {
     list: () => fetchJson<any[]>("/api/reglas"),
-    create: (data: { horaLimite: string; horaReferencia: string; margenMin: number; cooldownMin: number; vigenciaDesde: string }) =>
+    create: (data: { horaEntrada: string; horaLimite: string; horaReferencia: string; cooldownMin: number; vigenciaDesde: string }) =>
       fetchJson<any>("/api/reglas", { method: "POST", body: JSON.stringify(data) }),
   },
 
@@ -143,6 +158,9 @@ export const api = {
   // Gerencias
   gerencias: {
     list: () => fetchJson<any[]>("/api/gerencias"),
+    create: (data: { nombre: string }) => fetchJson<any>("/api/gerencias", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: number, data: { nombre: string }) => fetchJson<any>(`/api/gerencias/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    delete: (id: number) => fetchJson<any>(`/api/gerencias/${id}`, { method: "DELETE" }),
   },
 
   // Kiosco (endpoints protegidos por API_KIOSCO_KEY compartida con el servidor)
@@ -151,8 +169,8 @@ export const api = {
       fetchJson<{ challengeId: string; steps: string[]; expiresAt: string }>("/api/kiosco/challenge", {
         headers: { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KIOSCO_KEY ?? ""}` },
       }),
-    match: (data: { descriptor: number[]; quality: any; nonce: string; timestamp: number; challengeId?: string; series?: { yaw: number; pitch: number; t: number }[] }) =>
-      fetchJson<{ ok: boolean; tipo: string; msg: string; extrasH?: number; empleadoId?: number; nombre?: string; apellido?: string; cedula?: string; error?: string }>("/api/kiosco/match", {
+    match: (data: { descriptor: number[]; descriptor2?: number[]; quality: any; nonce: string; timestamp: number; challengeId?: string; series?: { yaw: number; pitch: number; t: number }[] }) =>
+      fetchJson<{ ok: boolean; tipo: string; msg: string; extrasH?: number; empleadoId?: number; nombre?: string; apellido?: string; cedula?: string; error?: string; dobleCheck?: boolean }>("/api/kiosco/match", {
         method: "POST",
         body: JSON.stringify(data),
         headers: { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KIOSCO_KEY ?? ""}` },

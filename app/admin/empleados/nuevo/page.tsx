@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { api, type ApiError } from "@/lib/api";
 import dynamic from 'next/dynamic';
 import { Select } from "@/components/ui/Select";
+import { useToast } from "@/components/ui/Toast";
 
 const FaceEnroll = dynamic(() => import('@/components/face/FaceEnroll').then(m => m.FaceEnroll), {
   ssr: false,
@@ -14,6 +15,7 @@ type Gerencia = { id: number; nombre: string };
 
 export default function NuevoEmpleado() {
   const router = useRouter();
+  const { addToast } = useToast();
   const [paso, setPaso] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +71,8 @@ export default function NuevoEmpleado() {
       setPaso(2);
     } catch (e: any) {
       console.error('[NuevoEmpleado] Error:', e);
-      setError(e.data?.error || e.message || "Error creando empleado");
+      const msg = e.data?.error || e.message || "Error creando empleado";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -92,11 +95,17 @@ export default function NuevoEmpleado() {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       setError(null);
+      if (data.warning) {
+        addToast({ type: 'error', title: 'Aviso de confusión', message: data.warning });
+      } else {
+        addToast({ type: 'success', title: 'Empleado registrado', message: 'Firma facial guardada correctamente' });
+      }
       router.push("/admin/empleados");
       router.refresh();
     } catch (e: any) {
       console.error('[NuevoEmpleado] Error enroll:', e);
-      setError(e.message || "Error guardando descriptor");
+      const msg = e.message || "Error guardando descriptor";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -202,6 +211,13 @@ export default function NuevoEmpleado() {
       {paso === 2 && empleadoId && (
         <div className="card">
           <h3 style={{ marginBottom: 6 }}> Paso 2 — Captura biométrica</h3>
+          
+          {error && (
+            <div className="alert alert-warn" style={{ marginBottom: 16 }}>
+              <span>ℹ️</span><span>{error}</span>
+            </div>
+          )}
+
           <p className="muted" style={{ marginBottom: 20 }}>
             La cámara permanece activa con vista previa. El recuadro verde indica que el rostro es apto para captura (iluminación, ángulo, nitidez). Se capturan 128 valores como descriptor facial.
           </p>
@@ -218,7 +234,7 @@ export default function NuevoEmpleado() {
 
           <hr className="divider" />
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <button className="btn" onClick={() => { setPaso(1); setEmpleadoId(null); }}>← Atrás</button>
+            <button className="btn" onClick={() => { setPaso(1); setEmpleadoId(null); setError(null); }}>← Atrás</button>
             <span className="muted" style={{ display: 'flex', alignItems: 'center', padding: '0 12px' }}>
               {loading ? 'Guardando vector…' : 'Use el botón "Capturar firma facial" arriba para guardar'}
             </span>

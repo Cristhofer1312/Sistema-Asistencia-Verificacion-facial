@@ -6,6 +6,8 @@ import { authOptions } from "@/lib/auth";
 import { Prisma } from "@prisma/client";
 import { getVenezuelaDate, toDateOnly, parseTime } from "@/lib/date-utils";
 import { autoMarkRange } from "@/lib/auto-marcado";
+import { getScope, SCOPE_DENIED_BODY } from "@/lib/scope";
+import { EMPLEADO_PUBLIC_SELECT } from "@/lib/empleado-select";
 
 interface SessionUser {
   id: string;
@@ -20,6 +22,10 @@ export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
 
+  const sessionUser = session.user as SessionUser;
+  const scope = getScope(sessionUser);
+  if (scope.tipo === "denegado") return NextResponse.json(SCOPE_DENIED_BODY, { status: 403 });
+
   const { searchParams } = new URL(req.url);
   const desde = searchParams.get("desde");
   const hasta = searchParams.get("hasta");
@@ -28,6 +34,9 @@ export async function GET(req: Request) {
   const gerenciaId = searchParams.get("gerenciaId");
   const gerencia = searchParams.get("gerencia"); // backward compat: nombre de gerencia
   const estado = searchParams.get("estado");
+  // Tope de filas: por defecto 500; el perfil del empleado lo eleva en modo
+  // historial completo. Tope duro 2000 para no degradar la respuesta.
+  const take = Math.min(Math.max(Number(searchParams.get("take")) || 500, 1), 2000);
 
   const where: Prisma.AsistenciaWhereInput = {};
 
@@ -47,7 +56,7 @@ export async function GET(req: Request) {
   }
   if (estado) where.estadoEntrada = estado as Prisma.EnumEstadoEntradaFilter<"Asistencia">;
 
-  const sessionUser = session.user as SessionUser;
+
   
   // Resolver gerenciaId desde gerencia (nombre) si se proporciona
   let resolvedGerenciaId: number | null = null;
@@ -58,18 +67,10 @@ export async function GET(req: Request) {
     if (g) resolvedGerenciaId = g.id;
   }
 
-  if (["GERENTE", "COORDINADOR"].includes(sessionUser.rol)) {
-    const empleadosGerencia = await prisma.empleado.findMany({
-      where: { gerenciaId: sessionUser.gerenciaId ?? undefined },
-      select: { id: true },
-    });
-    where.empleadoId = { in: empleadosGerencia.map(e => e.id) };
+  if (scope.tipo === "gerencia") {
+    where.empleado = { gerenciaId: scope.gerenciaId };
   } else if (resolvedGerenciaId) {
-    const empleadosGerencia = await prisma.empleado.findMany({
-      where: { gerenciaId: resolvedGerenciaId },
-      select: { id: true },
-    });
-    where.empleadoId = { in: empleadosGerencia.map(e => e.id) };
+    where.empleado = { gerenciaId: resolvedGerenciaId };
   }
 
   // Reconciliar: vacaciones/reposos vigentes en el rango (hasta hoy como máximo) deben tener su fila,
@@ -107,11 +108,11 @@ export async function GET(req: Request) {
   const asistencias = await prisma.asistencia.findMany({
     where,
     include: {
-      empleado: { select: { nombre: true, apellido: true, cedula: true, cargo: true, gerenciaId: true, gerencia: { select: { id: true, nombre: true } } } },
-      regla: { select: { horaLimite: true, horaReferencia: true, margenMin: true } },
+      empleado: { select: EMPLEADO_PUBLIC_SELECT },
+      regla: { select: { horaEntrada: true, horaLimite: true, horaReferencia: true } },
     },
     orderBy: [{ fecha: 'desc' }, { entrada: 'desc' }],
-    take: 500,
+    take,
   });
 
   // Normalizar al formato que espera la UI (lib/types.ts#Asistencia):

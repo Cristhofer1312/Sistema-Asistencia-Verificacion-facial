@@ -1,38 +1,26 @@
 // middleware.ts — Protección de rutas por rol (SRS v3.2)
-// ADMIN y RRHH: acceso global
+// ADMIN y RRHH: acceso global · /admin/usuarios: solo ADMIN
 // GERENTE / COORDINADOR: solo rutas de su gerencia
-// /api/fichaje: API Key exclusiva del kiosco (sin sesión de usuario)
-// /cambio-clave: accesible solo si claveInicial=true
+// /api/kiosco/*: protegido por API Key del kiosco (validada en cada route)
+// claveInicial=true: solo /cambio-clave (también bloquea /api/*)
+// La lógica de decisión vive en lib/route-access.ts (testeable).
 
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import type { NextRequestWithAuth } from "next-auth/middleware";
+import { decideAccess } from "@/lib/route-access";
 
 export default withAuth(
   function middleware(req: NextRequestWithAuth) {
     const token = req.nextauth.token as any;
-    const { pathname } = req.nextUrl;
+    const decision = decideAccess(req.nextUrl.pathname, token);
 
-    // Redirigir a cambio-clave si la clave es inicial
-    if (token?.claveInicial && pathname.startsWith("/admin")) {
-      return NextResponse.redirect(new URL("/cambio-clave", req.url));
+    if (decision.action === "redirect") {
+      return NextResponse.redirect(new URL(decision.to, req.url));
     }
-
-    // Rutas exclusivas ADMIN + RRHH
-    const soloAdminRrhh = [
-      "/admin/empleados/nuevo",
-      "/admin/reglas",
-      "/admin/feriados",
-      "/admin/vacaciones",
-      "/admin/reposos",
-      "/admin/auditoria",
-    ];
-    if (soloAdminRrhh.some((p) => pathname.startsWith(p))) {
-      if (!["ADMIN", "RRHH"].includes(token?.rol)) {
-        return NextResponse.redirect(new URL("/admin/dashboard", req.url));
-      }
+    if (decision.action === "json") {
+      return NextResponse.json(decision.body, { status: decision.status });
     }
-
     return NextResponse.next();
   },
   {
@@ -44,8 +32,7 @@ export default withAuth(
           pathname === "/" ||
           pathname.startsWith("/kiosco") ||
           pathname.startsWith("/models") || // pesos face-api estáticos (el kiosco no tiene sesión)
-          pathname.startsWith("/api/fichaje") || // protegida por API Key interna
-          pathname.startsWith("/api/kiosco") || // kiosco endpoints (descriptors, match)
+          pathname.startsWith("/api/kiosco") || // kiosco endpoints (challenge, match) — API Key en cada route
           pathname.startsWith("/api/auth")
         ) return true;
         // Lectura de reglas para el panel del kiosco (el POST sigue exigiendo ADMIN/RRHH en el route)

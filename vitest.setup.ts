@@ -37,6 +37,10 @@ const mockPrisma = {
     findFirst: vi.fn(),
     update: vi.fn(),
   },
+  permisoEstudiantil: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+  },
   logAuditoria: {
     create: vi.fn(),
   },

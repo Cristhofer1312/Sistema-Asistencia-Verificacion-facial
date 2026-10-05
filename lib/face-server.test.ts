@@ -54,7 +54,7 @@ describe('face-server — Matching 1:N', () => {
 
   describe('findBestMatchServer', () => {
     const threshold = MATCH_DISTANCE_THRESHOLD; // 0.5
-    const margin = MATCH_AMBIGUITY_MARGIN; // 0.06
+    const margin = MATCH_AMBIGUITY_MARGIN; // 0.18
 
     it('retorna match cuando un descriptor está bajo el umbral', () => {
       const entries = [
@@ -81,7 +81,7 @@ describe('face-server — Matching 1:N', () => {
     it('retorna null si hay ambigüedad (dos empleados muy cerca)', () => {
       const entries = [
         createEntry(1, createDescriptorAtDistance(0.2)), // dist ~0.2
-        createEntry(2, createDescriptorAtDistance(0.22)), // dist ~0.22 → diff 0.02 < margin 0.06
+        createEntry(2, createDescriptorAtDistance(0.22)), // dist ~0.22 → diff 0.02 < margin
       ];
       const result = findBestMatchServer(baseDescriptor, entries, threshold, margin);
       
@@ -91,7 +91,7 @@ describe('face-server — Matching 1:N', () => {
     it('retorna match si el segundo está suficientemente lejos (margin respetado)', () => {
       const entries = [
         createEntry(1, createDescriptorAtDistance(0.15)), // dist ~0.15
-        createEntry(2, createDescriptorAtDistance(0.3)),  // dist ~0.3 → diff 0.15 > margin 0.06
+        createEntry(2, createDescriptorAtDistance(0.35)),  // dist ~0.35 → diff 0.20 > margin
       ];
       const result = findBestMatchServer(baseDescriptor, entries, threshold, margin);
       
@@ -113,9 +113,9 @@ describe('face-server — Matching 1:N', () => {
 
     it('retorna el más cercano cuando hay múltiples candidatos válidos', () => {
       const entries = [
-        createEntry(1, createDescriptorAtDistance(0.3)), // dist ~0.3
-        createEntry(2, createDescriptorAtDistance(0.1)), // dist ~0.1 → mejor
-        createEntry(3, createDescriptorAtDistance(0.2)), // dist ~0.2
+        createEntry(1, createDescriptorAtDistance(0.35)), // dist ~0.35
+        createEntry(2, createDescriptorAtDistance(0.1)), // dist ~0.1 → mejor (diff 0.25 > margin)
+        createEntry(3, createDescriptorAtDistance(0.4)), // dist ~0.4
       ];
       const result = findBestMatchServer(baseDescriptor, entries, threshold, margin);
       

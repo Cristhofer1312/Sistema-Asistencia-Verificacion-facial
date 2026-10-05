@@ -61,12 +61,12 @@ export default function Empleados() {
     }
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("¿Dar de baja definitivamente? (Soft delete - conserva historial)")) return;
+  async function handleDelete(emp: Empleado) {
+    if (!confirm(`¿ELIMINAR a ${nombreCompleto(emp)} (${emp.cedula})?\n\nBorrado FÍSICO: elimina el empleado y todo su historial (asistencias, vacaciones, reposos, pases, permisos). Libera la cédula para registrar de nuevo.`)) return;
     try {
-      await api.empleados.delete(id);
-      setEmpleados(prev => prev.filter(e => e.id !== id));
-      addToast({ type: 'success', title: 'Eliminado', message: 'Empleado dado de baja correctamente' });
+      await api.empleados.delete(emp.id);
+      setEmpleados(prev => prev.filter(e => e.id !== emp.id));
+      addToast({ type: 'success', title: 'Eliminado', message: 'Empleado eliminado con todo su historial' });
     } catch (e: any) {
       addToast({ type: 'error', title: 'Error', message: e.data?.error || e.message || "Error eliminando empleado" });
     }
@@ -188,6 +188,14 @@ export default function Empleados() {
                                Reactivar
                             </button>
                         }
+                        <button
+                          className="btn btn-sm"
+                          style={{ background: "transparent", color: "var(--bad)", border: "1px dashed var(--bad-b)" }}
+                          title="Borrado físico: elimina empleado + historial (para pruebas)"
+                          onClick={() => handleDelete(e)}
+                        >
+                          Eliminar
+                        </button>
                       </div>
                     </td>
                   </tr>

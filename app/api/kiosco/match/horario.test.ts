@@ -11,9 +11,9 @@ describe('executeFichaje — validaciones de horario', () => {
 
   const regla = {
     id: 7,
-    horaLimite: '08:00',
+    horaEntrada: '08:00',
+    horaLimite: '09:00',
     horaReferencia: '17:00',
-    margenMin: 60,
     cooldownMin: 30,
     vigenciaDesde: new Date('2020-01-01'),
   };
@@ -50,10 +50,27 @@ describe('executeFichaje — validaciones de horario', () => {
     mockPrisma.logAuditoria.create.mockResolvedValue({});
   };
 
-  describe('clasificación de entrada (horaLimite 08:00 + margen 60)', () => {
-    it('07:59 → A_TIEMPO', async () => {
+  describe('clasificación de entrada (entrada 08:00, límite 09:00; FALTA solo por ausencia)', () => {
+    it('07:30 → TEMPRANO (antes de la hora de entrada)', async () => {
       setupBase();
-      const { now, hoy } = atHour(7, 59);
+      const { now, hoy } = atHour(7, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('temprano');
+      expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ estadoEntrada: 'TEMPRANO', reglaId: 7 }) })
+      );
+    });
+
+    it('08:00 → A_TIEMPO (borde inferior incluido)', async () => {
+      setupBase();
+      const { now, hoy } = atHour(8, 0);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('a_tiempo');
+    });
+
+    it('08:30 → A_TIEMPO (dentro de la ventana)', async () => {
+      setupBase();
+      const { now, hoy } = atHour(8, 30);
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('a_tiempo');
       expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
@@ -61,37 +78,33 @@ describe('executeFichaje — validaciones de horario', () => {
       );
     });
 
-    it('08:30 → TARDE', async () => {
+    it('09:00 → A_TIEMPO (borde superior incluido)', async () => {
       setupBase();
-      const { now, hoy } = atHour(8, 30);
-      // TARDE requiere pase para no fallar: con pase pasa a JUSTIFICADO; sin pase TARDE ficha igual
+      const { now, hoy } = atHour(9, 0);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('a_tiempo');
+    });
+
+    it('09:01 → TARDE (después del límite, sin bloqueo)', async () => {
+      setupBase();
+      const { now, hoy } = atHour(9, 1);
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('tarde');
     });
 
-    it('10:30 sin pase → FUERA_MARGEN (403)', async () => {
+    it('10:30 sin pase → TARDE (FALTA solo por ausencia)', async () => {
       setupBase();
-      const { now, hoy } = atHour(10, 30); // > 08:00+60 = FALTA sin pase
-      await expect(executeFichaje(1, now, hoy)).rejects.toThrow(/^FUERA_MARGEN/);
-      expect(mockPrisma.asistencia.create).not.toHaveBeenCalled();
-    });
-
-    it('10:30 con pase → JUSTIFICADO + conserva estadoOriginal FALTA + consume pase', async () => {
-      setupBase({ pase: { id: 9, motivo: 'cita médica', autorizadorId: 2 } });
       const { now, hoy } = atHour(10, 30);
       const r = await executeFichaje(1, now, hoy);
-      expect(r.tipo).toBe('justificado');
+      expect(r.tipo).toBe('tarde');
       expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ estadoEntrada: 'JUSTIFICADO', estadoOriginal: 'FALTA' }),
-        })
+        expect.objectContaining({ data: expect.objectContaining({ estadoEntrada: 'TARDE', reglaId: 7 }) })
       );
-      expect(mockPrisma.pasePrevio.update).toHaveBeenCalledWith({ where: { id: 9 }, data: { autorizado: true } });
     });
 
-    it('08:30 con pase → JUSTIFICADO + estadoOriginal TARDE', async () => {
-      setupBase({ pase: { id: 10, motivo: 'tráfico', autorizadorId: null } });
-      const { now, hoy } = atHour(8, 30);
+    it('10:30 con pase → JUSTIFICADO + conserva estadoOriginal TARDE + consume pase', async () => {
+      setupBase({ pase: { id: 9, motivo: 'cita médica', autorizadorId: 2 } });
+      const { now, hoy } = atHour(10, 30);
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('justificado');
       expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
@@ -99,6 +112,35 @@ describe('executeFichaje — validaciones de horario', () => {
           data: expect.objectContaining({ estadoEntrada: 'JUSTIFICADO', estadoOriginal: 'TARDE' }),
         })
       );
+      expect(mockPrisma.pasePrevio.update).toHaveBeenCalledWith({ where: { id: 9 }, data: { autorizado: true } });
+    });
+
+    it('09:30 con pase → JUSTIFICADO + estadoOriginal TARDE', async () => {
+      setupBase({ pase: { id: 10, motivo: 'tráfico', autorizadorId: null } });
+      const { now, hoy } = atHour(9, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('justificado');
+      expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ estadoEntrada: 'JUSTIFICADO', estadoOriginal: 'TARDE' }),
+        })
+      );
+    });
+
+    it('08:30 con pase → A_TIEMPO sin consumir pase (el pase solo aplica a TARDE)', async () => {
+      setupBase({ pase: { id: 11, motivo: 'tráfico', autorizadorId: null } });
+      const { now, hoy } = atHour(8, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('a_tiempo');
+      expect(mockPrisma.pasePrevio.update).not.toHaveBeenCalled();
+    });
+
+    it('07:30 con pase → TEMPRANO sin consumir pase', async () => {
+      setupBase({ pase: { id: 12, motivo: 'tráfico', autorizadorId: null } });
+      const { now, hoy } = atHour(7, 30);
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('temprano');
+      expect(mockPrisma.pasePrevio.update).not.toHaveBeenCalled();
     });
   });
 

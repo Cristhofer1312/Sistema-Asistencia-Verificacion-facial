@@ -24,9 +24,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    // Generar secuencia: 2 direcciones aleatorias + FRENTE al final
-    const dirs = shuffle([...DIRECTIONS]);
-    const steps = [...dirs, FRONT]; // ej: ["DERECHA", "IZQUIERDA", "FRENTE"]
+    // Generar secuencia: solo FRENTE (se eliminan IZQUIERDA/DERECHA para mayor rapidez y fluidez, manteniendo la exigencia de movimiento)
+    const steps = [FRONT];
 
     const expiraEn = new Date(Date.now() + CHALLENGE_TTL_MS);
 

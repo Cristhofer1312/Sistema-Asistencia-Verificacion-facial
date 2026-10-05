@@ -7,6 +7,8 @@ import { authOptions } from "@/lib/auth";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { getHoyVE } from "@/lib/date-utils";
+import { getScope, SCOPE_DENIED_BODY } from "@/lib/scope";
+import { EMPLEADO_PUBLIC_SELECT } from "@/lib/empleado-select";
 
 interface SessionUser {
   id: string;
@@ -33,6 +35,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   }
 
+  const scope = getScope(sessionUser);
+  if (scope.tipo === "denegado") return NextResponse.json(SCOPE_DENIED_BODY, { status: 403 });
+
   const { searchParams } = new URL(req.url);
   const empleadoId = searchParams.get("empleadoId");
   const fecha = searchParams.get("fecha");
@@ -45,18 +50,13 @@ export async function GET(req: Request) {
   if (soloPendientes) where.autorizado = false;
   if (tipo) where.tipo = tipo as Prisma.EnumTipoPaseFilter<"PasePrevio">;
 
-  // Gerente/Coordinador solo su gerencia
-  if (["GERENTE", "COORDINADOR"].includes(sessionUser.rol)) {
-    const empleadosGerencia = await prisma.empleado.findMany({
-      where: { gerenciaId: sessionUser.gerenciaId ?? undefined },
-      select: { id: true },
-    });
-    where.empleadoId = { in: empleadosGerencia.map(e => e.id) };
+  if (scope.tipo === "gerencia") {
+    where.empleado = { gerenciaId: scope.gerenciaId };
   }
 
   const pases = await prisma.pasePrevio.findMany({
     where,
-    include: { empleado: { select: { nombre: true, apellido: true, cedula: true, gerenciaId: true } } },
+    include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
     orderBy: { fecha: 'desc' },
     take: 100,
   });
@@ -120,12 +120,60 @@ export async function POST(req: Request) {
   // Validación de fecha: para JUSTIFICACION_ANTICIPADA permitir hoy, para PASE_NORMAL solo futuro
   // Comparar como strings YYYY-MM-DD (hora Venezuela) para evitar desfases de zona horaria
   const hoyStr = getHoyVE();
+  const isPast = fecha < hoyStr;
+  const isToday = fecha === hoyStr;
 
-  if (tipo === "PASE_NORMAL" && fecha < hoyStr) {
-    return NextResponse.json({ error: "No se pueden crear pases para fechas pasadas" }, { status: 400 });
+  // Si es fecha pasada (o hoy y ya tiene asistencia con error), intentamos justificar directamente
+  if (isPast || isToday) {
+    const asistencia = await prisma.asistencia.findUnique({
+      where: { empleadoId_fecha: { empleadoId, fecha: new Date(fecha) } }
+    });
+
+    if (asistencia) {
+      if (["TARDE", "FALTA"].includes(asistencia.estadoEntrada)) {
+        // Justificar asistencia existente
+        await prisma.asistencia.update({
+          where: { id: asistencia.id },
+          data: {
+            estadoEntrada: "JUSTIFICADO",
+            estadoOriginal: asistencia.estadoEntrada,
+            justificacionObs: motivo,
+            autorizadorId: Number(sessionUser.id),
+            actualizadoEn: new Date(),
+          },
+        });
+        await audit(
+          tipo === "JUSTIFICACION_ANTICIPADA" ? "CREAR_JUSTIFICACION_ANTICIPADA" : "JUSTIFICAR",
+          `${empleado.cedula} ${asistencia.estadoEntrada} → JUSTIFICADO · ${motivo}`,
+          { usuarioId: Number(sessionUser.id) }
+        );
+        return NextResponse.json({ ok: true, justificadoDirectamente: true }, { status: 201 });
+      } else if (isPast) {
+         return NextResponse.json({ error: `La asistencia del ${fecha} ya es ${asistencia.estadoEntrada} y no requiere pase.` }, { status: 400 });
+      }
+    } else if (isPast) {
+      // Es fecha pasada, no hay asistencia (cierre-dia no ha corrido). Creamos la FALTA ya justificada.
+      await prisma.asistencia.create({
+        data: {
+          empleadoId,
+          fecha: new Date(fecha),
+          estadoEntrada: "JUSTIFICADO",
+          estadoOriginal: "FALTA",
+          justificacionObs: motivo,
+          autorizadorId: Number(sessionUser.id),
+        }
+      });
+      await audit(
+        tipo === "JUSTIFICACION_ANTICIPADA" ? "CREAR_JUSTIFICACION_ANTICIPADA" : "JUSTIFICAR",
+        `${empleado.cedula} FALTA (ausente) → JUSTIFICADO · ${motivo}`,
+        { usuarioId: Number(sessionUser.id) }
+      );
+      return NextResponse.json({ ok: true, justificadoDirectamente: true }, { status: 201 });
+    }
   }
-  // Para JUSTIFICACION_ANTICIPADA se permite hoy (fechaPase >= hoy)
 
+  // Si llegamos aquí, es fecha futura, o es hoy y el empleado aún no ha fichado.
+  // Creamos el Pase Previo para que se consuma cuando fiche.
   const pase = await prisma.pasePrevio.create({
     data: {
       empleadoId,
@@ -134,13 +182,13 @@ export async function POST(req: Request) {
       motivo,
       autorizadorId: Number(sessionUser.id),
     },
-    include: { empleado: { select: { nombre: true, apellido: true, cedula: true, gerenciaId: true } } },
+    include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
   });
 
   const accionAuditoria = tipo === "JUSTIFICACION_ANTICIPADA" ? "CREAR_JUSTIFICACION_ANTICIPADA" : "CREAR_PASE";
   const msgAuditoria = tipo === "JUSTIFICACION_ANTICIPADA" 
-    ? `Justificación anticipada creada: ${pase.empleado?.cedula} ${fecha} · ${motivo}`
-    : `Pase previo creado: ${pase.empleado?.cedula} ${fecha} · ${motivo}`;
+    ? `Justificación anticipada creada (futuro): ${pase.empleado?.cedula} ${fecha} · ${motivo}`
+    : `Pase previo creado (futuro): ${pase.empleado?.cedula} ${fecha} · ${motivo}`;
   
   await audit(accionAuditoria as any, msgAuditoria, {
     usuarioId: Number(sessionUser.id),

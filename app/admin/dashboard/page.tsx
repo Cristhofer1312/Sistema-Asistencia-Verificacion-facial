@@ -450,9 +450,9 @@ export default function Dashboard() {
              Regla vigente
           </span>
           {[
-            ["Entrada límite", regla.horaLimite],
+            ["Hora de entrada", regla.horaEntrada],
+            ["Hora límite", regla.horaLimite],
             ["Salida ref.", regla.horaReferencia],
-            ["Margen tardanza", `${regla.margenMin} min`],
             ["Cooldown kiosco", `${regla.cooldownMin} min/emp.`],
           ].map(([k, v]) => (
             <div key={k} style={{ display: "flex", alignItems: "baseline", gap: 5 }}>

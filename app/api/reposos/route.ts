@@ -7,6 +7,8 @@ import { authOptions } from "@/lib/auth";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { autoMarkRange, solapeConOtroPermiso } from "@/lib/auto-marcado";
+import { getScope, SCOPE_DENIED_BODY } from "@/lib/scope";
+import { EMPLEADO_PUBLIC_SELECT } from "@/lib/empleado-select";
 
 interface SessionUser {
   id: string;
@@ -36,6 +38,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   }
 
+  const scope = getScope(sessionUser);
+  if (scope.tipo === "denegado") return NextResponse.json(SCOPE_DENIED_BODY, { status: 403 });
+
   const { searchParams } = new URL(req.url);
   const empleadoId = searchParams.get("empleadoId");
   const fecha = searchParams.get("fecha"); // reposos vigentes en esa fecha
@@ -60,8 +65,11 @@ export async function GET(req: Request) {
     ];
   }
 
-  const esGerente = ["GERENTE", "COORDINADOR"].includes(sessionUser.rol);
-  if (gerenciaId && !esGerente) where.empleado = { gerenciaId: Number(gerenciaId) };
+  if (scope.tipo === "gerencia") {
+    where.empleado = { gerenciaId: scope.gerenciaId };
+  } else if (gerenciaId) {
+    where.empleado = { gerenciaId: Number(gerenciaId) };
+  }
 
   const AND: Prisma.ReposoMedicoWhereInput[] = [];
   if (fecha && fechaRe.test(fecha)) {
@@ -88,14 +96,11 @@ export async function GET(req: Request) {
   }
   if (AND.length) where.AND = AND;
 
-  // Gerente/Coordinador solo su gerencia (prevalece sobre el parámetro)
-  if (esGerente) {
-    where.empleado = { gerenciaId: sessionUser.gerenciaId ?? undefined };
-  }
+  // (Filtro por gerencia ya aplicado arriba)
 
   const reposos = await prisma.reposoMedico.findMany({
     where,
-    include: { empleado: { select: { nombre: true, apellido: true, cedula: true, gerenciaId: true, gerencia: { select: { nombre: true } } } } },
+    include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
     orderBy: { inicio: "desc" },
     take: 500,
   });
@@ -171,7 +176,7 @@ export async function POST(req: Request) {
       documento: documento || null,
       registradoPorId: Number(sessionUser.id),
     },
-    include: { empleado: { select: { nombre: true, apellido: true, cedula: true } } },
+    include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
   });
 
   // Marcado automático: convierte FALTAS/FERIADO sin marcaje y crea los días

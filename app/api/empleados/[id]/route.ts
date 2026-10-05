@@ -6,6 +6,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { z } from "zod";
 import { invalidateDescriptorsCache } from "@/lib/face-cache";
+import { getScope, SCOPE_DENIED_BODY } from "@/lib/scope";
+import { EMPLEADO_PUBLIC_SELECT } from "@/lib/empleado-select";
 
 const updateSchema = z.object({
   nombre: z.string().min(1).max(80).optional(),
@@ -22,35 +24,38 @@ export async function GET(
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
 
-  const user = session.user as any;
-  const rol = user.rol;
-  const gerenciaId = user.gerenciaId;
+  const scope = getScope(session.user as any);
+  if (scope.tipo === "denegado") return NextResponse.json(SCOPE_DENIED_BODY, { status: 403 });
 
   const { id } = await params;
   const isNumeric = /^\d+$/.test(id);
 
-  const empleado = await prisma.empleado.findUnique({
-    where: isNumeric ? { id: Number(id) } : { cedula: id },
-    include: { gerencia: true },
-  });
+  // Sin `descriptor`: la plantilla biométrica nunca sale del servidor
+  // Una cédula puramente numérica ("30098588") también pasa isNumeric:
+  // se busca primero por id y, si no existe, por cédula.
+  let empleado = null;
+  if (isNumeric) {
+    empleado = await prisma.empleado.findUnique({
+      where: { id: Number(id) },
+      select: EMPLEADO_PUBLIC_SELECT,
+    });
+  }
+  if (!empleado) {
+    empleado = await prisma.empleado.findUnique({
+      where: { cedula: id },
+      select: EMPLEADO_PUBLIC_SELECT,
+    });
+  }
 
   if (!empleado) {
     return NextResponse.json({ error: "Empleado no encontrado" }, { status: 404 });
   }
 
-  if (["GERENTE", "COORDINADOR"].includes(rol) && empleado.gerenciaId !== gerenciaId) {
+  if (scope.tipo === "gerencia" && empleado.gerenciaId !== scope.gerenciaId) {
     return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   }
 
-  // Convertir descriptor Bytes -> number[] si existe (para enrolamiento)
-  let descriptor: number[] | null = null;
-  if (empleado.descriptor) {
-    const buffer = Buffer.from(empleado.descriptor);
-    const ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-    descriptor = Array.from(new Float32Array(ab));
-  }
-
-  return NextResponse.json({ ...empleado, descriptor });
+  return NextResponse.json(empleado);
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -103,7 +108,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const updated = await prisma.empleado.update({
     where: { id: empleadoId },
     data: updateData,
-    include: { gerencia: true },
+    select: EMPLEADO_PUBLIC_SELECT,
   });
 
   // Invalidar caché si cambia el estado activo (afecta al match del kiosco)
@@ -137,16 +142,29 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     return NextResponse.json({ error: "Empleado no encontrado" }, { status: 404 });
   }
 
-  // Soft delete: marcar inactivo y poner dadoDeBajaEn
-  await prisma.empleado.update({
-    where: { id: empleadoId },
-    data: { activo: false, dadoDeBajaEn: new Date() },
+  // Borrado físico (para pruebas y depuración): elimina el empleado junto con
+  // sus dependientes (asistencias, vacaciones, reposos, pases, permisos).
+  // Para baja conservando historial usar PATCH { activo: false }.
+  const borrados = await prisma.$transaction(async (tx) => {
+    const delPermisos = await tx.permisoEstudiantil.deleteMany({ where: { empleadoId } });
+    const delPases = await tx.pasePrevio.deleteMany({ where: { empleadoId } });
+    const delVacs = await tx.vacacionEmpleado.deleteMany({ where: { empleadoId } });
+    const delRepos = await tx.reposoMedico.deleteMany({ where: { empleadoId } });
+    const delAsis = await tx.asistencia.deleteMany({ where: { empleadoId } });
+    await tx.empleado.delete({ where: { id: empleadoId } });
+    return {
+      permisos: delPermisos.count,
+      pases: delPases.count,
+      vacaciones: delVacs.count,
+      reposos: delRepos.count,
+      asistencias: delAsis.count,
+    };
   });
 
-  // Invalidar caché ya que el empleado ya no está activo
+  // Invalidar caché ya que el descriptor eliminado no debe seguir matcheando
   invalidateDescriptorsCache();
 
-  await audit("DESACTIVAR_EMPLEADO", `Empleado dado de baja (DELETE): ${empleado.cedula}`, { usuarioId: Number(sessionUser.id) });
+  await audit("ELIMINAR_EMPLEADO", `Empleado eliminado (físico): ${empleado.cedula} (asis:${borrados.asistencias} vac:${borrados.vacaciones} rep:${borrados.reposos} pases:${borrados.pases} permisos:${borrados.permisos})`, { usuarioId: Number(sessionUser.id) });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, borrados });
 }

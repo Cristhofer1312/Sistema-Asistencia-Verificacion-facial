@@ -118,7 +118,9 @@ export default function Kiosco() {
         setTimeout(() => setLastResult(null), 2000);
         return;
       }
-      const isEntrada = data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones";
+      // Los mensajes de entrada empiezan con "Entrada" (incluye TEMPRANO); los de salida con "Salida".
+      // Se usa el msg como fuente de verdad para no confundir TEMPRANO de entrada con el de salida.
+      const isEntrada = data.msg?.startsWith("Entrada") || data.tipo?.includes("entrada") || data.tipo === "a_tiempo" || data.tipo === "tarde" || data.tipo === "justificado" || data.tipo === "feriado" || data.tipo === "vacaciones";
       setLastResult({
         tipo: isEntrada ? "entrada" : "salida",
         estado: data.msg,
@@ -150,7 +152,25 @@ export default function Kiosco() {
   });
 
   const handleMultiFace = () => {};
-  const handleUnknown = () => {};
+  const handleUnknown = () => {
+    setLastResult({
+      tipo: "error",
+      estado: "Rostro no reconocido — no está registrado",
+      nombre: "",
+      previewCanvas: undefined,
+    });
+    setTimeout(() => setLastResult(null), 2500);
+  };
+  const handleRejected = (info: { tipo: string; msg: string; nombre?: string; apellido?: string; cedula?: string }) => {
+    const nombre = info.nombre ? `${info.nombre} ${info.apellido ?? ""}`.trim() : "Rostro reconocido";
+    setLastResult({
+      tipo: "warn",
+      estado: `${info.msg} — solicite pase previo en administración`,
+      nombre: info.cedula ? `${nombre} (${info.cedula})` : nombre,
+      previewCanvas: undefined,
+    });
+    setTimeout(() => setLastResult(null), 4000);
+  };
   const handleCooldown = (minutos: number) => {};
 
   return (
@@ -233,6 +253,7 @@ export default function Kiosco() {
               onMatch={handleMatch}
               onMultiFace={handleMultiFace}
               onUnknown={handleUnknown}
+              onRejected={handleRejected}
               onCooldown={handleCooldown}
               onError={setError}
               onQualityChange={setFaceQuality}
@@ -248,19 +269,19 @@ export default function Kiosco() {
             {regla ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: "1px solid rgba(148,163,184,0.1)" }}>
-                  <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Límite de entrada</span>
+                  <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Hora de entrada</span>
+                  <span style={{ color: "#f1f5f9", fontSize: "1.1rem", fontWeight: 700 }}>{regla.horaEntrada}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: "1px solid rgba(148,163,184,0.1)" }}>
+                  <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Hora límite</span>
                   <span style={{ color: "#f1f5f9", fontSize: "1.1rem", fontWeight: 700 }}>{regla.horaLimite}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: "1px solid rgba(148,163,184,0.1)" }}>
                   <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Salida de ref.</span>
                   <span style={{ color: "#f1f5f9", fontSize: "1.1rem", fontWeight: 700 }}>{regla.horaReferencia}</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: "1px solid rgba(148,163,184,0.1)" }}>
-                  <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Margen</span>
-                  <span style={{ color: "#f1f5f9", fontSize: "1.1rem", fontWeight: 700 }}>{regla.margenMin} min</span>
-                </div>
                 <p style={{ fontSize: ".85rem", color: "#64748b", marginTop: 8, lineHeight: 1.5 }}>
-                  Entradas fuera del margen sin justificación resultarán en Falta. Extras se calculan a la salida.
+                  Antes de la hora de entrada: TEMPRANO · Entre entrada y límite: A TIEMPO · Después del límite: TARDE. FALTA solo por ausencia del día. Extras se calculan a la salida.
                 </p>
               </div>
             ) : (

@@ -31,8 +31,33 @@ export const authOptions: NextAuthOptions = {
 
         if (!usuario || !usuario.activo) return null;
 
+        if (usuario.bloqueadoHasta && usuario.bloqueadoHasta > new Date()) {
+          throw new Error("Cuenta bloqueada temporalmente por múltiples intentos fallidos.");
+        }
+
         const ok = await bcrypt.compare(password, usuario.passwordHash);
-        if (!ok) return null;
+        if (!ok) {
+          const MAX_INTENTOS = 5;
+          const nuevosIntentos = (usuario.intentosFallidos || 0) + 1;
+          const bloqueadoHasta = nuevosIntentos >= MAX_INTENTOS ? new Date(Date.now() + 15 * 60 * 1000) : null;
+          
+          await prisma.usuario.update({
+            where: { id: usuario.id },
+            data: { intentosFallidos: nuevosIntentos, bloqueadoHasta }
+          });
+          
+          if (bloqueadoHasta) {
+             throw new Error("Demasiados intentos fallidos. Cuenta bloqueada por 15 minutos.");
+          }
+          return null; // Credenciales inválidas normales
+        }
+
+        if (usuario.intentosFallidos > 0 || usuario.bloqueadoHasta) {
+          await prisma.usuario.update({
+             where: { id: usuario.id },
+             data: { intentosFallidos: 0, bloqueadoHasta: null }
+          });
+        }
 
         await prisma.logAuditoria.create({
           data: {
@@ -55,7 +80,7 @@ export const authOptions: NextAuthOptions = {
   ],
 
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) {
         token.id           = (user as any).id;
         token.username     = (user as any).username;
@@ -63,6 +88,13 @@ export const authOptions: NextAuthOptions = {
         token.gerenciaId   = (user as any).gerenciaId;
         token.gerenciaNombre = (user as any).gerenciaNombre;
         token.claveInicial = (user as any).claveInicial;
+      }
+      
+      // Re-validación o actualización de sesión
+      if (trigger === "update" && session) {
+        if (session.claveInicial !== undefined) {
+          token.claveInicial = session.claveInicial;
+        }
       }
       return token;
     },

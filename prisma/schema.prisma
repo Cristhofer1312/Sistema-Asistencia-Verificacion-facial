@@ -44,6 +44,8 @@ model Usuario {
   gerencia         Gerencia? @relation(fields: [gerenciaId], references: [id])
   claveInicial     Boolean   @default(true)   // obliga cambio en primer login
   activo           Boolean   @default(true)
+  intentosFallidos Int       @default(0)
+  bloqueadoHasta   DateTime?
   creadoEn         DateTime  @default(now())
 
   logsAuditoria    LogAuditoria[]
@@ -71,6 +73,7 @@ model Empleado {
   vacaciones         VacacionEmpleado[]
   pasesPrevios       PasePrevio[]
   reposos            ReposoMedico[]
+  permisosEstudio    PermisoEstudiantil[]
 
   @@index([cedula])
   @@index([gerenciaId, activo])
@@ -81,9 +84,9 @@ model Empleado {
 // ─────────────────────────────────────────────────────────────
 model ReglaAsistencia {
   id            Int      @id @default(autoincrement())
-  horaLimite    String   @db.VarChar(5)    // "08:00"
+  horaEntrada   String   @db.VarChar(5)    // "08:00" — hora esperada de entrada
+  horaLimite    String   @db.VarChar(5)    // "09:00" — fin de ventana a tiempo
   horaReferencia String  @db.VarChar(5)    // "17:00"
-  margenMin     Int                         // 60 — margen tardanza en minutos
   cooldownMin   Int      @default(30)       // 30 — cooldown kiosco
   vigenciaDesde DateTime                    // fecha a partir de la que aplica
   creadoPorId   Int?
@@ -97,6 +100,7 @@ model ReglaAsistencia {
 // ─────────────────────────────────────────────────────────────
 enum EstadoEntrada {
   A_TIEMPO
+  TEMPRANO
   TARDE
   FALTA
   JUSTIFICADO
@@ -129,6 +133,8 @@ model Asistencia {
   justificacionDoc String?      @db.VarChar(500) // URL o descripción
   justificacionObs String?      @db.Text
   autorizadorId   Int?          // usuario que justificó / creó pase
+  permisoEstudiantilId Int?     // permiso estudiantil aplicado (trazabilidad, sin nuevo enum)
+  permisoEstudiantil PermisoEstudiantil? @relation(fields: [permisoEstudiantilId], references: [id])
   creadoEn        DateTime      @default(now())
   actualizadoEn   DateTime      @updatedAt
 
@@ -197,6 +203,29 @@ model ReposoMedico {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 8c. Permisos estudiantiles (extensión de hora límite por día de semana)
+// Solo alargan la hora límite general, nunca la recortan. Se evalúan en
+// vivo en lib/fichaje.ts; no pre-crean filas (no interactúan con cierre).
+// ─────────────────────────────────────────────────────────────
+model PermisoEstudiantil {
+  id          Int      @id @default(autoincrement())
+  empleadoId  Int
+  empleado    Empleado @relation(fields: [empleadoId], references: [id])
+  diasSemana  Int[]    // 0=Dom..6=Sáb (getDay sobre hora VE). Ej: [2,4]=Mar+Jue
+  horaLimite  String   @db.VarChar(5) // "10:30" — debe ser > regla vigente
+  validoDesde DateTime @db.Date
+  validoHasta DateTime @db.Date
+  motivo      String?  @db.VarChar(300)
+  activo      Boolean  @default(true)
+  creadoPorId Int?
+  creadoEn    DateTime @default(now())
+
+  asistencias Asistencia[]
+
+  @@index([empleadoId, activo])
+}
+
+// ─────────────────────────────────────────────────────────────
 // 9. Pases previos (habilita entrada fuera de margen) y Justificaciones Anticipadas
 // ─────────────────────────────────────────────────────────────
 enum TipoPase {
@@ -231,6 +260,7 @@ enum AccionAuditoria {
   CREAR_EMPLEADO
   DESACTIVAR_EMPLEADO
   REACTIVAR_EMPLEADO
+  ELIMINAR_EMPLEADO
   ENROLLAR_EMPLEADO
   FICHAJE_ENTRADA
   FICHAJE_SALIDA
@@ -241,10 +271,16 @@ enum AccionAuditoria {
   ELIMINAR_FERIADO
   CREAR_VACACION
   ELIMINAR_VACACION
+  ANULAR_VACACION
   CREAR_REPOSO
   ELIMINAR_REPOSO
+  ANULAR_REPOSO
   CAMBIO_CLAVE
   CREAR_JUSTIFICACION_ANTICIPADA
+  CREAR_PERMISO_ESTUDIO
+  ACTUALIZAR_PERMISO_ESTUDIO
+  ELIMINAR_PERMISO_ESTUDIO
+  SUSPENDER_PERMISO_ESTUDIO
   FALTA_PROYECTADA
   ELIMINAR_USUARIO
   MATCH_KIOSCO
@@ -252,8 +288,6 @@ enum AccionAuditoria {
   MATCH_KIOSCO_REPLAY
   MATCH_KIOSCO_BAD_QUALITY
   MATCH_KIOSCO_BAD_CHALLENGE
-  ANULAR_VACACION
-  ANULAR_REPOSO
 }
 
 model LogAuditoria {

@@ -28,9 +28,9 @@ describe('Data Flow: Kiosco → Match Server → Fichaje', () => {
 
   const mockRegla = {
     id: 1,
-    horaLimite: '08:00',
+    horaEntrada: '08:00',
+    horaLimite: '09:00',
     horaReferencia: '17:00',
-    margenMin: 60,
     cooldownMin: 30,
     vigenciaDesde: new Date('2020-01-01'),
   };

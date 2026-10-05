@@ -22,10 +22,12 @@ const NAV = [
   {
     section: "Configuración",
     items: [
+      { href: "/admin/gerencias",  icon: "", label: "Gerencias" },
       { href: "/admin/reglas",     icon: "", label: "Horarios" },
       { href: "/admin/feriados",   icon: "", label: "Feriados" },
       { href: "/admin/vacaciones", icon: "", label: "Vacaciones" },
       { href: "/admin/reposos",    icon: "", label: "Reposos médicos" },
+      { href: "/admin/permisos-estudio", icon: "", label: "Permisos estudio" },
     ],
   },
   {
@@ -47,7 +49,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     ...group,
     items: group.items.filter(item => {
       if (item.href === "/admin/usuarios") return rol === "ADMIN";
-      const requiresAdminRrhh = ["/admin/auditoria", "/admin/reglas", "/admin/feriados", "/admin/vacaciones", "/admin/reposos", "/admin/empleados/nuevo"];
+      const requiresAdminRrhh = ["/admin/auditoria", "/admin/reglas", "/admin/feriados", "/admin/vacaciones", "/admin/reposos", "/admin/empleados/nuevo", "/admin/gerencias"];
       if (requiresAdminRrhh.includes(item.href)) return ["ADMIN", "RRHH"].includes(rol ?? "");
       return true;
     })

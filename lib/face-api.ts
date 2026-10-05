@@ -5,17 +5,22 @@
 
 import * as faceapi from '@vladmandic/face-api';
 
+// Umbrales centralizados en lib/face-server.ts (fuente única, sin duplicar).
+// Se re-exportan aquí por compatibilidad con importadores existentes.
+import { MATCH_DISTANCE_THRESHOLD, MATCH_AMBIGUITY_MARGIN } from './face-server';
+export { MATCH_DISTANCE_THRESHOLD, MATCH_AMBIGUITY_MARGIN };
+
 const MODEL_URL = '/models';
 
 export const FACE_API_CONFIG = {
   // Tiny Face Detector - rápido y ligero para kiosco
   tinyFaceDetectorOptions: new faceapi.TinyFaceDetectorOptions({
-    inputSize: 320,
-    scoreThreshold: 0.5,
-  }),
-  // Para enrolamiento (más precisión)
-  tinyFaceDetectorOptionsEnroll: new faceapi.TinyFaceDetectorOptions({
     inputSize: 416,
+    scoreThreshold: 0.2, // Umbral muy bajo para que la cámara "vea" el rostro aunque haya sombras o pelo
+  }),
+  // Para enrolamiento (máxima precisión, el performance no importa aquí)
+  tinyFaceDetectorOptionsEnroll: new faceapi.TinyFaceDetectorOptions({
+    inputSize: 864,
     scoreThreshold: 0.5,
   }),
 };
@@ -29,6 +34,15 @@ let modelsLoaded = false;
 export async function loadFaceApiModels(): Promise<void> {
   if (modelsLoaded) return;
   
+  // 1. Forzar el uso de WebGL para aceleración por GPU (maximiza potencia de cálculo)
+  try {
+    await faceapi.tf.setBackend('webgl');
+    await faceapi.tf.ready();
+  } catch (e) {
+    console.warn("[FaceAPI] WebGL no disponible, usando backend de respaldo", e);
+  }
+
+  // 2. Cargar modelos
   await Promise.all([
     faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
     faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
@@ -102,11 +116,6 @@ export function euclideanDistance(a: Float32Array, b: Float32Array): number {
   }
   return Math.sqrt(sum);
 }
-
-/** Umbral máximo de distancia euclidiana para aceptar un match */
-export const MATCH_DISTANCE_THRESHOLD = 0.5;
-/** Diferencia mínima entre el mejor candidato y el mejor de OTRO empleado */
-export const MATCH_AMBIGUITY_MARGIN = 0.06;
 
 /**
  * Encuentra el mejor match 1:N en array de descriptores.

@@ -4,9 +4,9 @@ import { api } from "@/lib/api";
 
 type Regla = {
   id: number;
+  horaEntrada: string;
   horaLimite: string;
   horaReferencia: string;
-  margenMin: number;
   cooldownMin: number;
   vigenciaDesde: string;
   creadoPorId: number | null;
@@ -18,9 +18,9 @@ export default function Reglas() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    horaLimite: "08:00",
+    horaEntrada: "08:00",
+    horaLimite: "09:00",
     horaReferencia: "17:00",
-    margenMin: 60,
     cooldownMin: 30,
     vigenciaDesde: "",
   });
@@ -50,9 +50,9 @@ export default function Reglas() {
     setCreating(true);
     try {
       await api.reglas.create({
+        horaEntrada: formData.horaEntrada,
         horaLimite: formData.horaLimite,
         horaReferencia: formData.horaReferencia,
-        margenMin: formData.margenMin,
         cooldownMin: formData.cooldownMin,
         vigenciaDesde: formData.vigenciaDesde,
       });
@@ -89,9 +89,9 @@ export default function Reglas() {
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 24px" }}>
             {[
-              ["Entrada límite", vigente.horaLimite],
+              ["Hora de entrada", vigente.horaEntrada],
+              ["Hora límite", vigente.horaLimite],
               ["Salida referencia", vigente.horaReferencia],
-              ["Margen tardanza", `${vigente.margenMin} min`],
               ["Cooldown kiosco", `${vigente.cooldownMin} min`],
             ].map(([k, v]) => (
               <div key={k} style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -111,16 +111,16 @@ export default function Reglas() {
         <form onSubmit={handleCreate}>
           <div className="grid2" style={{ gap: 18 }}>
             <div className="form-group">
-              <label htmlFor="hr-entrada">Hora límite entrada <span style={{ color: "var(--bad)" }}>*</span></label>
-              <input id="hr-entrada" type="time" value={formData.horaLimite} onChange={e => setFormData({ ...formData, horaLimite: e.target.value })} required />
+              <label htmlFor="hr-entrada">Hora de entrada <span style={{ color: "var(--bad)" }}>*</span></label>
+              <input id="hr-entrada" type="time" value={formData.horaEntrada} onChange={e => setFormData({ ...formData, horaEntrada: e.target.value })} required />
+            </div>
+            <div className="form-group">
+              <label htmlFor="hr-limite">Hora límite (fin ventana a tiempo) <span style={{ color: "var(--bad)" }}>*</span></label>
+              <input id="hr-limite" type="time" value={formData.horaLimite} onChange={e => setFormData({ ...formData, horaLimite: e.target.value })} required />
             </div>
             <div className="form-group">
               <label htmlFor="hr-salida">Hora referencia salida <span style={{ color: "var(--bad)" }}>*</span></label>
               <input id="hr-salida" type="time" value={formData.horaReferencia} onChange={e => setFormData({ ...formData, horaReferencia: e.target.value })} required />
-            </div>
-            <div className="form-group">
-              <label htmlFor="hr-margen">Margen tardanza (min) <span style={{ color: "var(--bad)" }}>*</span></label>
-              <input id="hr-margen" type="number" value={formData.margenMin} onChange={e => setFormData({ ...formData, margenMin: Number(e.target.value) })} min={0} max={240} required />
             </div>
             <div className="form-group">
               <label htmlFor="hr-cooldown">Cooldown kiosco (min) <span style={{ color: "var(--bad)" }}>*</span></label>
@@ -157,8 +157,8 @@ export default function Reglas() {
               <tr>
                 <th>Vigencia desde</th>
                 <th>Entrada</th>
+                <th>Límite</th>
                 <th>Salida ref.</th>
-                <th>Margen</th>
                 <th>Cooldown</th>
                 <th>Creador</th>
               </tr>
@@ -167,9 +167,9 @@ export default function Reglas() {
               {reglas.map((r, i) => (
                 <tr key={r.id}>
                   <td><span className={i === 0 ? "badge b-just" : "mono muted"}>{(r.vigenciaDesde.split("T")[0]) + (i === 0 ? " (actual)" : "")}</span></td>
+                  <td className="mono" style={{ fontWeight: 600 }}>{r.horaEntrada}</td>
                   <td className="mono" style={{ fontWeight: 600 }}>{r.horaLimite}</td>
                   <td className="mono" style={{ fontWeight: 600 }}>{r.horaReferencia}</td>
-                  <td>{r.margenMin} min</td>
                   <td>{r.cooldownMin} min</td>
                   <td className="muted mono">User {r.creadoPorId ?? "—"}</td>
                 </tr>

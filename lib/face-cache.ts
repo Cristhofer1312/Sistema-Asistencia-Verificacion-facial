@@ -10,15 +10,17 @@ export interface DescriptorEntry {
   descriptor: number[];
 }
 
-let descriptorsCache: DescriptorEntry[] | null = null;
-let cacheVersion = 0;
+const globalForFaceCache = globalThis as unknown as { 
+  descriptorsCache?: DescriptorEntry[] | null;
+  cacheVersion?: number;
+};
 
 export function getDescriptorsCache(): DescriptorEntry[] {
-  return descriptorsCache ?? [];
+  return globalForFaceCache.descriptorsCache ?? [];
 }
 
 export function getCacheVersion(): number {
-  return cacheVersion;
+  return globalForFaceCache.cacheVersion ?? 0;
 }
 
 export async function refreshDescriptorsCache(prisma: PrismaClient): Promise<void> {
@@ -27,7 +29,7 @@ export async function refreshDescriptorsCache(prisma: PrismaClient): Promise<voi
     select: { id: true, cedula: true, nombre: true, apellido: true, descriptor: true },
   });
 
-  descriptorsCache = empleados
+  globalForFaceCache.descriptorsCache = empleados
     .filter((e) => e.descriptor)
     .map((e) => ({
       empleadoId: e.id,
@@ -36,16 +38,16 @@ export async function refreshDescriptorsCache(prisma: PrismaClient): Promise<voi
       apellido: e.apellido,
       descriptor: descriptorToArray(bufferToDescriptor(Buffer.from(e.descriptor!))),
     }));
-  cacheVersion++;
+  globalForFaceCache.cacheVersion = (globalForFaceCache.cacheVersion ?? 0) + 1;
 }
 
 export function invalidateDescriptorsCache(): void {
-  descriptorsCache = null;
-  cacheVersion++;
+  globalForFaceCache.descriptorsCache = null;
+  globalForFaceCache.cacheVersion = (globalForFaceCache.cacheVersion ?? 0) + 1;
 }
 
 // Solo para testing: reset completo del estado
 export function __resetCacheForTesting(): void {
-  descriptorsCache = null;
-  cacheVersion = 0;
+  globalForFaceCache.descriptorsCache = null;
+  globalForFaceCache.cacheVersion = 0;
 }

@@ -33,3 +33,32 @@ export function bufferToDescriptor(buffer: Buffer): Float32Array {
   const ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   return new Float32Array(ab);
 }
+
+/**
+ * Promedia N descriptores frame-a-frame y renormaliza L2.
+ * El promediado reduce el ruido de captura (misma técnica en enrolamiento
+ * y en el probe del kiosco): la varianza del promedio cae ~1/N.
+ * La renormalización L2 es vital para que la distancia euclidiana sea
+ * comparable con descriptores individuales del modelo.
+ */
+export function averageDescriptors(descriptors: Float32Array[]): Float32Array {
+  const averaged = new Float32Array(128);
+  if (descriptors.length === 0) return averaged;
+  let norm = 0;
+  for (let i = 0; i < 128; i++) {
+    let sum = 0;
+    for (const d of descriptors) {
+      sum += d[i];
+    }
+    const val = sum / descriptors.length;
+    averaged[i] = val;
+    norm += val * val;
+  }
+  const length = Math.sqrt(norm);
+  if (length > 0) {
+    for (let i = 0; i < 128; i++) {
+      averaged[i] = averaged[i] / length;
+    }
+  }
+  return averaged;
+}

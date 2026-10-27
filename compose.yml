@@ -1,6 +1,13 @@
+name: asistencia
+
 services:
   app:
-    build: .
+    restart: unless-stopped
+    build:
+      context: .
+      args:
+        # Se incrusta en el bundle del cliente; debe coincidir con API_KIOSCO_KEY.
+        NEXT_PUBLIC_API_KIOSCO_KEY: ${API_KIOSCO_KEY:-kiosco-local-key}
     ports:
       - "3000:3000"
     environment:
@@ -17,6 +24,7 @@ services:
     networks:
       - asistencia-net
   db:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: asistencia
@@ -31,6 +39,7 @@ services:
     networks:
       - asistencia-net
   proxy:
+    restart: unless-stopped
     image: nginx:1.27-alpine
     ports:
       - "80:80"

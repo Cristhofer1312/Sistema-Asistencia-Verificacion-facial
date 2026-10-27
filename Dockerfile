@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM node:20-slim AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install --no-audit --no-fund || npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+# --legacy-peer-deps: vitest pide @types/node >=22 como peer y el proyecto usa 20 (solo tipos de dev)
+RUN npm ci --legacy-peer-deps --no-audit --no-fund
 
 FROM node:20-slim AS builder
 WORKDIR /app

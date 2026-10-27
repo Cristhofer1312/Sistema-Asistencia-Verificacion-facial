@@ -6,3 +6,4 @@ backups/
 pgdata/
 public/models/*.bin
 public/models/*.json
+certs/

@@ -11,7 +11,7 @@ Attendance system with facial recognition ("asistencia facial"). Next.js 14 App 
 Requires Node 20 and a PostgreSQL database reachable at `DATABASE_URL` (copy `.env.example` to `.env`). The quickest DB is `docker compose up -d db` (exposed on host port 5433).
 
 ```bash
-npm install
+npm ci --legacy-peer-deps            # plain npm install fails: vitest peer wants @types/node >=22
 npx prisma generate                 # regenerate client after schema changes
 npx prisma migrate dev --name <x>   # create + apply a migration (dev only)
 npx prisma migrate deploy           # apply existing migrations (prod; not run by the Dockerfile)

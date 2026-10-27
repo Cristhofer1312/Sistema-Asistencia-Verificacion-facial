@@ -4,6 +4,8 @@ import { api } from "@/lib/api";
 import { type Empleado, type PermisoEstudiantil, nombreCompleto, diasSemanaLabel, getHoyVE } from "@/lib/types";
 import { Select } from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
+import { AccionesReporte, EncabezadoImpresion, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
 
 const DIAS_OPTS = [
   { v: 1, label: "Lun" }, { v: 2, label: "Mar" }, { v: 3, label: "Mié" },
@@ -117,19 +119,52 @@ export default function PermisosEstudio() {
     return true;
   });
 
+  const vigenteHoy = (p: PermisoEstudiantil) => p.activo && String(p.validoDesde).slice(0, 10) <= hoy && hoy <= String(p.validoHasta).slice(0, 10);
+  const situacion = (p: PermisoEstudiantil) =>
+    !p.activo ? { label: "Suspendido", cls: "b-inactive" }
+      : vigenteHoy(p) ? { label: "Vigente", cls: "b-tiempo" }
+      : String(p.validoDesde).slice(0, 10) > hoy ? { label: "Programado", cls: "b-just" }
+      : { label: "Vencido", cls: "b-inactive" };
+
+  const orden = useOrden(filtrados, {
+    empleado: p => p.empleado ? `${p.empleado.apellido} ${p.empleado.nombre}` : null,
+    limite: p => p.horaLimite,
+    desde: p => String(p.validoDesde).slice(0, 10),
+    hasta: p => String(p.validoHasta).slice(0, 10),
+    situacion: p => situacion(p).label,
+  }, { clave: "desde", dir: "desc" });
+
+  function exportar() {
+    descargarCSV(nombreArchivo("permisos_estudiantiles"), [
+      { titulo: "Cédula", valor: (p: PermisoEstudiantil) => p.empleado?.cedula },
+      { titulo: "Apellido", valor: (p: PermisoEstudiantil) => p.empleado?.apellido },
+      { titulo: "Nombre", valor: (p: PermisoEstudiantil) => p.empleado?.nombre },
+      { titulo: "Días", valor: (p: PermisoEstudiantil) => diasSemanaLabel(p.diasSemana) },
+      { titulo: "Hora límite", valor: (p: PermisoEstudiantil) => p.horaLimite },
+      { titulo: "Válido desde", valor: (p: PermisoEstudiantil) => String(p.validoDesde).slice(0, 10) },
+      { titulo: "Válido hasta", valor: (p: PermisoEstudiantil) => String(p.validoHasta).slice(0, 10) },
+      { titulo: "Motivo", valor: (p: PermisoEstudiantil) => p.motivo },
+      { titulo: "Situación", valor: (p: PermisoEstudiantil) => situacion(p).label },
+    ], orden.ordenadas);
+  }
+
   if (loading) {
     return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "400px" }}>Cargando…</div>;
   }
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ marginBottom: 4 }}>Permisos estudiantiles</h2>
-        <p className="muted">Extienden la hora límite solo los días indicados · solo pueden alargar, nunca recortar</p>
+      <EncabezadoImpresion titulo="Permisos estudiantiles" detalle={`Estado: ${filtroEstado}${q ? ` · Búsqueda: "${q}"` : ""}`} />
+      <div className="page-head">
+        <div>
+          <h2>Permisos estudiantiles</h2>
+          <p className="page-sub">Extienden la hora límite solo los días indicados · solo pueden alargar, nunca recortar</p>
+        </div>
+        <AccionesReporte onExportar={exportar} deshabilitado={filtrados.length === 0} />
       </div>
 
       {/* Form */}
-      <div className="card">
+      <div className="card no-print">
         <h3 style={{ marginBottom: 18 }}>Otorgar permiso</h3>
         {error && <div className="alert alert-warn" style={{ marginBottom: 16 }}><span></span><span>{error}</span></div>}
         <form onSubmit={handleSubmit}>
@@ -141,6 +176,8 @@ export default function PermisosEstudio() {
                 value={formData.empleadoId}
                 onChange={e => setFormData({ ...formData, empleadoId: e.target.value })}
                 required
+                searchable
+                searchPlaceholder="Buscar por nombre o cédula…"
               >
                 <option value="">Seleccione empleado</option>
                 {empleados.map(emp => (
@@ -224,8 +261,11 @@ export default function PermisosEstudio() {
 
       {/* Filtros + lista */}
       <div className="card" style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 14 }}>Permisos otorgados</h3>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <h3 style={{ margin: 0 }}>Permisos otorgados</h3>
+          <span className="chip">{filtrados.length} de {permisos.length} · {permisos.filter(vigenteHoy).length} vigentes hoy</span>
+        </div>
+        <div className="no-print" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
           <div className="form-group" style={{ flex: "2 1 220px" }}>
             <label htmlFor="pe-f-q">Empleado o motivo</label>
             <input
@@ -247,17 +287,17 @@ export default function PermisosEstudio() {
           </div>
         </div>
 
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table>
+        <div className="table-wrap tabla-sticky" style={{ border: "none", maxHeight: "70vh" }}>
+          <table className="tabla-reporte">
             <thead>
               <tr>
-                <th>Empleado</th>
+                <orden.Th k="empleado">Empleado</orden.Th>
                 <th>Días</th>
-                <th>Límite</th>
-                <th>Vigencia</th>
+                <orden.Th k="limite">Límite</orden.Th>
+                <orden.Th k="desde">Vigencia</orden.Th>
                 <th>Motivo</th>
-                <th>Estado</th>
-                <th>Acción</th>
+                <orden.Th k="situacion">Situación</orden.Th>
+                <th className="no-print">Acción</th>
               </tr>
             </thead>
             <tbody>
@@ -268,10 +308,12 @@ export default function PermisosEstudio() {
                   </td>
                 </tr>
               ) : (
-                filtrados.map((p) => (
+                orden.ordenadas.map((p) => (
                   <tr key={p.id} style={{ opacity: p.activo ? 1 : 0.6 }}>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{p.empleado ? nombreCompleto(p.empleado) : `ID ${p.empleadoId}`}</div>
+                      {p.empleado
+                        ? <a href={`/admin/empleados/${p.empleado.cedula}`} style={{ fontWeight: 600 }}>{nombreCompleto(p.empleado)}</a>
+                        : <div style={{ fontWeight: 600 }}>ID {p.empleadoId}</div>}
                       <div className="muted mono" style={{ fontSize: ".75rem" }}>{p.empleado?.cedula ?? ""}</div>
                     </td>
                     <td style={{ fontWeight: 600 }}>{diasSemanaLabel(p.diasSemana)}</td>
@@ -279,11 +321,11 @@ export default function PermisosEstudio() {
                     <td className="mono" style={{ fontSize: ".8rem" }}>{String(p.validoDesde).slice(0, 10)} → {String(p.validoHasta).slice(0, 10)}</td>
                     <td className="muted" style={{ fontSize: ".85rem" }}>{p.motivo || "—"}</td>
                     <td>
-                      <span className={`badge ${p.activo ? "b-tiempo" : "b-inactive"}`} style={{ fontSize: ".68rem" }}>
-                        {p.activo ? "Activo" : "Suspendido"}
+                      <span className={`badge ${situacion(p).cls}`} style={{ fontSize: ".68rem" }}>
+                        {situacion(p).label}
                       </span>
                     </td>
-                    <td>
+                    <td className="no-print">
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button className="btn btn-ghost btn-sm" onClick={() => handleToggle(p)}>
                           {p.activo ? "Suspender" : "Reactivar"}

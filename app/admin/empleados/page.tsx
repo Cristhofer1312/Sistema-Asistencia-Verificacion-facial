@@ -5,6 +5,10 @@ import { api } from "@/lib/api";
 import { type Empleado, nombreCompleto, getGerenciaName, type Gerencia } from "@/lib/types";
 import { useToast } from "@/components/ui/Toast";
 import { Select } from "@/components/ui/Select";
+import { AccionesReporte, EncabezadoImpresion, KpiStrip, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
+
+const fecha10 = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : "");
 
 export default function Empleados() {
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
@@ -12,9 +16,16 @@ export default function Empleados() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [gerenciaFilter, setGerenciaFilter] = useState<string>("Todas");
+  const [estadoFilter, setEstadoFilter] = useState<"todos" | "activos" | "inactivos">("todos");
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const { addToast } = useToast();
+
+  // /admin/empleados?gerenciaId=N (enlace desde Gerencias) preselecciona el filtro
+  useEffect(() => {
+    const g = new URLSearchParams(window.location.search).get("gerenciaId");
+    if (g && /^\d+$/.test(g)) setGerenciaFilter(g);
+  }, []);
 
   useEffect(() => {
     async function cargar() {
@@ -42,14 +53,42 @@ export default function Empleados() {
   const filteredEmpleados = useMemo(() => {
     return empleados.filter((e) => {
       if (gerenciaFilter !== "Todas" && e.gerenciaId !== Number(gerenciaFilter)) return false;
+      if (estadoFilter === "activos" && !e.activo) return false;
+      if (estadoFilter === "inactivos" && e.activo) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
-        const nombreCompletoLower = `${e.nombre} ${e.apellido}`.toLowerCase();
-        if (!nombreCompletoLower.includes(q) && !e.cedula.toLowerCase().includes(q)) return false;
+        const hay = `${e.nombre} ${e.apellido} ${e.cedula} ${e.cargo ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [empleados, search, gerenciaFilter]);
+  }, [empleados, search, gerenciaFilter, estadoFilter]);
+
+  const orden = useOrden(filteredEmpleados, {
+    empleado: e => `${e.apellido} ${e.nombre}`,
+    cedula: e => e.cedula,
+    gerencia: e => getGerenciaName(e.gerencia),
+    cargo: e => e.cargo,
+    estado: e => (e.activo ? "Activo" : "Inactivo"),
+    alta: e => fecha10(e.creadoEn) || null,
+  }, { clave: "empleado", dir: "asc" });
+
+  const activos = filteredEmpleados.filter(e => e.activo).length;
+  const nGerencias = new Set(filteredEmpleados.map(e => e.gerenciaId)).size;
+  const gerenciaSel = gerencias.find(g => String(g.id) === gerenciaFilter)?.nombre;
+
+  function exportar() {
+    descargarCSV(nombreArchivo("empleados"), [
+      { titulo: "Cédula", valor: (e: Empleado) => e.cedula },
+      { titulo: "Apellido", valor: (e: Empleado) => e.apellido },
+      { titulo: "Nombre", valor: (e: Empleado) => e.nombre },
+      { titulo: "Gerencia", valor: (e: Empleado) => getGerenciaName(e.gerencia) },
+      { titulo: "Cargo", valor: (e: Empleado) => e.cargo },
+      { titulo: "Estado", valor: (e: Empleado) => (e.activo ? "Activo" : "Inactivo") },
+      { titulo: "Alta", valor: (e: Empleado) => fecha10(e.creadoEn) },
+      { titulo: "Baja", valor: (e: Empleado) => fecha10(e.dadoDeBajaEn) },
+    ], orden.ordenadas);
+  }
 
   async function toggleActivo(emp: Empleado) {
     try {
@@ -87,18 +126,31 @@ export default function Empleados() {
 
   return (
     <div>
-      <div className="row-between" style={{ marginBottom: 20 }}>
+      <EncabezadoImpresion
+        titulo="Nómina de empleados"
+        detalle={`Gerencia: ${gerenciaSel ?? "todas"} · Estado: ${estadoFilter}${search.trim() ? ` · Búsqueda: "${search.trim()}"` : ""}`}
+      />
+      <div className="page-head">
         <div>
-          <h2 style={{ marginBottom: 4 }}>Empleados</h2>
-          <p className="muted">Nombre clicable abre el histórico individual</p>
+          <h2>Empleados</h2>
+          <p className="page-sub">El nombre abre el histórico individual</p>
         </div>
-        <Link href="/admin/empleados/nuevo" className="btn btn-primary"> Nuevo empleado</Link>
+        <AccionesReporte onExportar={exportar} deshabilitado={filteredEmpleados.length === 0}>
+          <Link href="/admin/empleados/nuevo" className="btn btn-primary">Nuevo empleado</Link>
+        </AccionesReporte>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
+      <KpiStrip items={[
+        { label: "Empleados", val: filteredEmpleados.length },
+        { label: "Activos", val: activos, color: "var(--ok)" },
+        { label: "Inactivos", val: filteredEmpleados.length - activos, color: "var(--muted)" },
+        { label: "Gerencias", val: nGerencias },
+      ]} />
+
+      <div className="card no-print" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end" }}>
           <div className="form-group" style={{ flex: 1, minWidth: 220 }}>
-            <label htmlFor="search-emp">Buscar por nombre o cédula</label>
+            <label htmlFor="search-emp">Buscar por nombre, cédula o cargo</label>
             <input
               id="search-emp"
               type="text"
@@ -118,6 +170,18 @@ export default function Empleados() {
               {gerencias.map(g => <option key={g.id} value={g.id}>{g.nombre}</option>)}
             </Select>
           </div>
+          <div className="form-group" style={{ minWidth: 160 }}>
+            <label htmlFor="estado-filter">Estado</label>
+            <Select
+              id="estado-filter"
+              value={estadoFilter}
+              onChange={(e) => setEstadoFilter(e.target.value as typeof estadoFilter)}
+            >
+              <option value="todos">Todos</option>
+              <option value="activos">Activos</option>
+              <option value="inactivos">Inactivos (de baja)</option>
+            </Select>
+          </div>
           <div style={{ display: "flex", gap: 8 }}>
             <span className="muted" style={{ alignSelf: "flex-end" }}>{filteredEmpleados.length} de {empleados.length} empleados</span>
           </div>
@@ -125,27 +189,28 @@ export default function Empleados() {
       </div>
 
       <div className="card">
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap tabla-sticky" style={{ maxHeight: "72vh" }}>
+          <table className="tabla-reporte">
             <thead>
               <tr>
-                <th>Empleado</th>
-                <th>Documento</th>
-                <th>Gerencia</th>
-                <th>Cargo</th>
-                <th>Estado</th>
-                <th>Acción</th>
+                <orden.Th k="empleado">Empleado</orden.Th>
+                <orden.Th k="cedula">Documento</orden.Th>
+                <orden.Th k="gerencia">Gerencia</orden.Th>
+                <orden.Th k="cargo">Cargo</orden.Th>
+                <orden.Th k="estado">Estado</orden.Th>
+                <orden.Th k="alta">Alta</orden.Th>
+                <th className="no-print">Acción</th>
               </tr>
             </thead>
             <tbody>
               {filteredEmpleados.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: "32px" }}>
+                  <td colSpan={7} style={{ textAlign: "center", padding: "32px" }}>
                     <p className="muted">No se encontraron empleados</p>
                   </td>
                 </tr>
               ) : (
-                filteredEmpleados.map((e) => (
+                orden.ordenadas.map((e) => (
                   <tr key={e.id}>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -168,7 +233,11 @@ export default function Empleados() {
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td className="mono" style={{ fontSize: ".8rem" }}>
+                      {fecha10(e.creadoEn)}
+                      {!e.activo && e.dadoDeBajaEn && <div className="muted">baja {fecha10(e.dadoDeBajaEn)}</div>}
+                    </td>
+                    <td className="no-print">
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <a href={`/admin/empleados/${e.cedula}`} className="btn btn-sm" style={{ background: "var(--surface-2)", color: "var(--ink)", border: "1px solid var(--border)" }}>
                            Histórico
@@ -204,7 +273,7 @@ export default function Empleados() {
             </tbody>
           </table>
         </div>
-        <p className="muted" style={{ marginTop: 14, fontSize: ".78rem" }}>
+        <p className="muted no-print" style={{ marginTop: 14, fontSize: ".78rem" }}>
           Solo Administrador y RRHH registran / dan de baja empleados. La baja excluye del kiosco y no genera FALTA, conserva el historial completo.
         </p>
       </div>

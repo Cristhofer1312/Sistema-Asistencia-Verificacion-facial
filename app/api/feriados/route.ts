@@ -25,7 +25,7 @@ export async function GET(req: Request) {
   const feriados = await prisma.feriado.findMany({
     where,
     orderBy: { fecha: 'desc' },
-    take: 500,
+    take: 5000, // antes 500: cortaba en silencio la lista de la vista
   });
   return NextResponse.json(feriados);
 }
@@ -45,10 +45,11 @@ export async function DELETE(req: Request) {
 
   await prisma.feriado.delete({ where: { id: Number(id) } });
 
-  // Revierte las marcas FERIADO sin marcaje recalculando (vacación/reposo vigente manda)
+  // Revierte las marcas FERIADO sin marcaje recalculando (vacación/reposo vigente manda;
+  // si el día ya pasó y nadie marcó, queda FALTA, igual que el cierre diario)
   const rev = await revertRange(prisma, { estado: "FERIADO", inicio: feriado.fecha, fin: feriado.fecha });
 
-  await audit("ELIMINAR_FERIADO", `Feriado eliminado: ${feriado.fecha.toISOString().split('T')[0]} - ${feriado.motivo} (${rev.revertidas} revertida(s), ${rev.borradas} borrada(s))`, {
+  await audit("ELIMINAR_FERIADO", `Feriado eliminado: ${feriado.fecha.toISOString().split('T')[0]} - ${feriado.motivo} (${rev.faltas} → falta, ${rev.revertidas} revertida(s), ${rev.borradas} borrada(s))`, {
     usuarioId: Number((session.user as any).id),
   });
 

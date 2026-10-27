@@ -35,6 +35,7 @@ const NAV = [
     items: [
       { href: "/admin/usuarios",  icon: "", label: "Usuarios" },
       { href: "/admin/auditoria", icon: "", label: "Auditoria" },
+      { href: "/admin/diagnostico", icon: "", label: "Diagnóstico facial" },
     ],
   },
 ];
@@ -49,7 +50,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     ...group,
     items: group.items.filter(item => {
       if (item.href === "/admin/usuarios") return rol === "ADMIN";
-      const requiresAdminRrhh = ["/admin/auditoria", "/admin/reglas", "/admin/feriados", "/admin/vacaciones", "/admin/reposos", "/admin/empleados/nuevo", "/admin/gerencias"];
+      const requiresAdminRrhh = ["/admin/auditoria", "/admin/reglas", "/admin/feriados", "/admin/vacaciones", "/admin/reposos", "/admin/empleados/nuevo", "/admin/gerencias", "/admin/diagnostico"];
       if (requiresAdminRrhh.includes(item.href)) return ["ADMIN", "RRHH"].includes(rol ?? "");
       return true;
     })

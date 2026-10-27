@@ -1,6 +1,11 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { api } from "@/lib/api";
+import { RangoFechas, AccionesReporte, EncabezadoImpresion, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
+
+const DIAS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const diaSemana = (iso: string) => DIAS[new Date(`${iso.slice(0, 10)}T00:00:00Z`).getUTCDay()];
 
 type Feriado = {
   id: number;
@@ -110,19 +115,40 @@ export default function Feriados() {
     }
   }
 
+  const orden = useOrden(feriados, {
+    fecha: f => f.fecha.slice(0, 10),
+    motivo: f => f.motivo,
+  }, { clave: "fecha", dir: "desc" });
+  const laborables = feriados.filter(f => { const d = diaSemana(f.fecha); return d !== "Sábado" && d !== "Domingo"; }).length;
+
+  function exportar() {
+    descargarCSV(nombreArchivo("feriados", filtros.desde, filtros.hasta), [
+      { titulo: "Fecha", valor: (f: Feriado) => f.fecha.slice(0, 10) },
+      { titulo: "Día", valor: (f: Feriado) => diaSemana(f.fecha) },
+      { titulo: "Motivo", valor: (f: Feriado) => f.motivo },
+    ], orden.ordenadas);
+  }
+
   if (loading) {
     return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "400px" }}>Cargando…</div>;
   }
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ marginBottom: 4 }}>Feriados</h2>
-        <p className="muted">Un día o rango con motivo · El rango se expande a filas diarias</p>
+      <EncabezadoImpresion
+        titulo="Calendario de feriados"
+        detalle={filtros.desde || filtros.hasta ? `Período ${filtros.desde || "inicio"} a ${filtros.hasta || "—"}` : "Todos los feriados"}
+      />
+      <div className="page-head">
+        <div>
+          <h2>Feriados</h2>
+          <p className="page-sub">Un día o rango con motivo · El rango se expande a filas diarias</p>
+        </div>
+        <AccionesReporte onExportar={exportar} deshabilitado={feriados.length === 0} />
       </div>
 
       {/* New feriado form */}
-      <div className="card">
+      <div className="card no-print">
         <h3 style={{ marginBottom: 16 }}> Registrar feriado</h3>
         {error && <div className="alert alert-warn" style={{ marginBottom: 16 }}><span></span><span>{error}</span></div>}
 
@@ -210,8 +236,8 @@ export default function Feriados() {
       </div>
 
       {/* Filtros */}
-      <div className="card" style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 14 }}> Buscar feriados</h3>
+      <div className="card no-print" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}>Buscar feriados</h3>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div className="form-group" style={{ flex: "2 1 220px" }}>
             <label htmlFor="fer-f-q">Motivo</label>
@@ -223,14 +249,7 @@ export default function Feriados() {
               placeholder="Motivo del feriado…"
             />
           </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="fer-f-desde">Desde</label>
-            <input id="fer-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
-          </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="fer-f-hasta">Hasta</label>
-            <input id="fer-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
-          </div>
+          <RangoFechas idPrefix="fer-f" permitirTodo presets={["mes", "mes_pasado", "anio"]} desde={filtros.desde} hasta={filtros.hasta} onChange={r => setFiltros({ ...filtros, ...r })} />
           <div className="form-group">
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFiltros(FILTROS_FER_INICIALES)}>
               Limpiar
@@ -243,33 +262,35 @@ export default function Feriados() {
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3>Feriados registrados</h3>
-          <span className="chip">{feriados.length} feriados</span>
+          <span className="chip">{feriados.length} feriado(s) · {laborables} en día laborable</span>
         </div>
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table>
+        <div className="table-wrap tabla-sticky" style={{ border: "none", maxHeight: "70vh" }}>
+          <table className="tabla-reporte">
             <thead>
               <tr>
-                <th>Fecha</th>
-                <th>Motivo</th>
-                <th>Acción</th>
+                <orden.Th k="fecha">Fecha</orden.Th>
+                <th>Día</th>
+                <orden.Th k="motivo">Motivo</orden.Th>
+                <th className="no-print">Acción</th>
               </tr>
             </thead>
             <tbody>
               {feriados.length === 0 ? (
                 <tr>
-                  <td colSpan={3} style={{ textAlign: "center", padding: "32px" }}>
-                    <p className="muted">No hay feriados registrados</p>
+                  <td colSpan={4} style={{ textAlign: "center", padding: "32px" }}>
+                    <p className="muted">No hay feriados con estos filtros</p>
                   </td>
                 </tr>
               ) : (
-                feriados.map((f) => (
+                orden.ordenadas.map((f) => (
                   <tr key={f.id}>
-                    <td className="mono" style={{ fontWeight: 600 }}>{f.fecha}</td>
+                    <td className="mono" style={{ fontWeight: 600 }}>{f.fecha.slice(0, 10)}</td>
+                    <td className="muted" style={{ fontSize: ".8125rem" }}>{diaSemana(f.fecha)}</td>
                     <td>
                       <span className="badge b-fer" style={{ marginRight: 8 }}>FERIADO</span>
                       {f.motivo}
                     </td>
-                    <td>
+                    <td className="no-print">
                       <button
                         className="btn btn-sm btn-danger"
                         style={{ background: "var(--bad-l)", color: "var(--bad)", border: "1.5px solid var(--bad-b)" }}

@@ -8,12 +8,24 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
 
-  const gerencias = await prisma.gerencia.findMany({
-    orderBy: { nombre: 'asc' },
-    select: { id: true, nombre: true },
-  });
+  const [gerencias, activos] = await Promise.all([
+    prisma.gerencia.findMany({
+      orderBy: { nombre: 'asc' },
+      select: { id: true, nombre: true, _count: { select: { empleados: true, usuarios: true } } },
+    }),
+    prisma.empleado.groupBy({ by: ["gerenciaId"], where: { activo: true }, _count: { _all: true } }),
+  ]);
 
-  return NextResponse.json(gerencias);
+  // Conteos para la vista de gerencias (el resto de vistas solo usa id/nombre)
+  const activosPor = new Map(activos.map((a) => [a.gerenciaId, a._count._all]));
+  return NextResponse.json(
+    gerencias.map(({ _count, ...g }) => ({
+      ...g,
+      empleados: _count.empleados,
+      empleadosActivos: activosPor.get(g.id) ?? 0,
+      usuarios: _count.usuarios,
+    }))
+  );
 }
 
 export async function POST(req: Request) {

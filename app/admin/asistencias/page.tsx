@@ -1,10 +1,22 @@
 "use client";
 import { useEffect, useMemo, useState, useRef } from "react";
-import { api } from "@/lib/api";
+import { api, fetchAsistencias } from "@/lib/api";
 import { BadgeEstadoEntrada } from "@/components/ui/BadgeEstadoEntrada";
+import { AvisoTruncado } from "@/components/ui/AvisoTruncado";
 import { type Asistencia, type Empleado, badgeClass, nombreCompleto, getHoyVE, getSemanaVE, getGerenciaName, ESTADOS_FILTRO, formatExtras } from "@/lib/types";
 import { useToast } from "@/components/ui/Toast";
 import { Select } from "@/components/ui/Select";
+import { RangoFechas, AccionesReporte, Paginacion, paginar, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
+
+type PasePendiente = {
+  id: number;
+  fecha: string;
+  tipo: "PASE_NORMAL" | "JUSTIFICACION_ANTICIPADA";
+  motivo: string;
+  creadoEn?: string;
+  empleado: { nombre: string; apellido: string; cedula: string };
+};
 
 export default function Asistencias() {
   const [filtroEstado, setFiltroEstado] = useState("Todos");
@@ -16,6 +28,7 @@ export default function Asistencias() {
   const [pase, setPase] = useState<{ empleadoId: number; fecha: string; motivo: string; cedula: string; nombre: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [truncado, setTruncado] = useState<{ mostradas: number; total: number } | null>(null);
   const [asistencias, setAsistencias] = useState<Asistencia[]>([]);
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [gerencias, setGerencias] = useState<{ id: number; nombre: string }[]>([]);
@@ -23,7 +36,9 @@ export default function Asistencias() {
   const [creandoPase, setCreandoPase] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const { addToast } = useToast();
-  const [vista, setVista] = useState<"dia" | "historial">("dia");
+  const [vista, setVista] = useState<"dia" | "historial" | "pendientes">("dia");
+  const [pendientes, setPendientes] = useState<PasePendiente[]>([]);
+  const [loadingPend, setLoadingPend] = useState(false);
   const [dia, setDia] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const [asisDia, setAsisDia] = useState<Asistencia[]>([]);
@@ -49,8 +64,20 @@ export default function Asistencias() {
     }
   }
 
+  async function cargarPendientes() {
+    setLoadingPend(true);
+    try {
+      setPendientes(await api.pases.list({ pendientes: true }) as PasePendiente[]);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Error', message: e.message || 'No se pudieron cargar los pases pendientes' });
+    } finally {
+      setLoadingPend(false);
+    }
+  }
+
   useEffect(() => {
     if (vista === "dia") cargarDia();
+    if (vista === "pendientes") cargarPendientes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dia, vista]);
 
@@ -85,12 +112,14 @@ export default function Asistencias() {
     try {
       const [emps, asis] = await Promise.all([
         api.empleados.list() as Promise<Empleado[]>,
-        fetch(`/api/asistencias?desde=${desde}&hasta=${hasta}${filtroGerenciaId !== "Todas" ? `&gerenciaId=${filtroGerenciaId}` : ""}${filtroEstado !== "Todos" ? `&estado=${encodeURIComponent(filtroEstado)}` : ""}`, {
-          signal: abortRef.current.signal
-        }).then(r => r.json()),
+        fetchAsistencias<Asistencia>(
+          `desde=${desde}&hasta=${hasta}${filtroGerenciaId !== "Todas" ? `&gerenciaId=${filtroGerenciaId}` : ""}${filtroEstado !== "Todos" ? `&estado=${encodeURIComponent(filtroEstado)}` : ""}`,
+          abortRef.current.signal
+        ),
       ]);
       setEmpleados(emps);
-      setAsistencias(asis);
+      setAsistencias(asis.filas);
+      setTruncado(asis.truncado ? { mostradas: asis.filas.length, total: asis.total } : null);
       const gers = [{ id: 0, nombre: "Todas" }, ...Array.from(new Map(emps.map(e => [e.gerenciaId, { id: e.gerenciaId, nombre: getGerenciaName(e.gerencia) }])).values())].sort((a, b) => a.nombre.localeCompare(b.nombre));
       setGerencias(gers);
     } catch (e: any) {
@@ -105,9 +134,40 @@ export default function Asistencias() {
     return () => { if (abortRef.current) abortRef.current.abort(); };
   }, [desde, hasta, filtroGerenciaId, filtroEstado]);
 
-  const filasFiltradas = useMemo(() =>
-    asistencias.filter(f => filtroEstado === "Todos" || f.estadoEntrada === filtroEstado),
-    [asistencias, filtroEstado]);
+  const [busquedaHist, setBusquedaHist] = useState("");
+  const [pagHist, setPagHist] = useState(1);
+  const [tamPagHist, setTamPagHist] = useState(100);
+
+  const filasFiltradas = useMemo(() => {
+    const q = busquedaHist.trim().toLowerCase();
+    return asistencias.filter(f =>
+      (filtroEstado === "Todos" || f.estadoEntrada === filtroEstado) &&
+      (!q || `${f.empleado.nombre} ${f.empleado.apellido} ${f.empleado.cedula}`.toLowerCase().includes(q)));
+  }, [asistencias, filtroEstado, busquedaHist]);
+
+  const ordenHist = useOrden(filasFiltradas, {
+    empleado: f => `${f.empleado.apellido} ${f.empleado.nombre}`,
+    fecha: f => f.fecha,
+    entrada: f => f.entrada,
+    estado: f => f.estadoEntrada,
+    extras: f => f.extrasH,
+  }, { clave: "fecha", dir: "desc" });
+
+  useEffect(() => { setPagHist(1); }, [desde, hasta, filtroGerenciaId, filtroEstado, busquedaHist, ordenHist.orden]);
+
+  function exportarHistorial() {
+    descargarCSV(nombreArchivo("asistencias", desde, hasta), [
+      { titulo: "Fecha", valor: (f: Asistencia) => f.fecha },
+      { titulo: "Cédula", valor: (f: Asistencia) => f.empleado.cedula },
+      { titulo: "Apellido", valor: (f: Asistencia) => f.empleado.apellido },
+      { titulo: "Nombre", valor: (f: Asistencia) => f.empleado.nombre },
+      { titulo: "Entrada", valor: (f: Asistencia) => f.entrada },
+      { titulo: "Salida", valor: (f: Asistencia) => f.salida },
+      { titulo: "Estado", valor: (f: Asistencia) => f.estadoEntrada },
+      { titulo: "Estado original", valor: (f: Asistencia) => f.estadoOriginal },
+      { titulo: "Horas extra", valor: (f: Asistencia) => f.extrasH },
+    ], ordenHist.ordenadas);
+  }
 
   async function handleJustificar() {
     if (!just || !just.justificacionObs) return;
@@ -143,6 +203,7 @@ export default function Asistencias() {
       addToast({ type: 'success', title: 'Pase creado', message: 'El pase previo se creó correctamente' });
       await cargarDatos();
       if (vista === "dia") await cargarDia();
+      if (vista === "pendientes") await cargarPendientes();
     } catch (e: any) {
       addToast({ type: 'error', title: 'Error', message: e.data?.error || e.message || "Error al crear pase" });
     } finally {
@@ -170,6 +231,7 @@ export default function Asistencias() {
 
   return (
     <div>
+      {truncado && <AvisoTruncado {...truncado} />}
       <div className="row-between" style={{ marginBottom: 20 }}>
         <div>
           <h2 style={{ marginBottom: 4 }}>Crear pase</h2>
@@ -183,7 +245,47 @@ export default function Asistencias() {
       <div className="row" style={{ gap: 8, marginBottom: 16 }}>
         <button className={"preset-btn" + (vista === "dia" ? " active" : "")} onClick={() => setVista("dia")}> Por día</button>
         <button className={"preset-btn" + (vista === "historial" ? " active" : "")} onClick={() => setVista("historial")}> Historial</button>
+        <button className={"preset-btn" + (vista === "pendientes" ? " active" : "")} onClick={() => setVista("pendientes")}> Pases pendientes</button>
       </div>
+
+      {vista === "pendientes" && (
+        <div className="card" style={{ padding: 0, overflow: "hidden", opacity: loadingPend ? 0.6 : 1 }}>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ margin: 0 }}>Pases y justificaciones por usar</h3>
+            <span className="chip">{pendientes.length} pendiente(s)</span>
+          </div>
+          <div className="table-wrap" style={{ border: "none" }}>
+            <table>
+              <thead>
+                <tr><th>Empleado</th><th>Fecha</th><th>Tipo</th><th>Motivo</th></tr>
+              </thead>
+              <tbody>
+                {pendientes.map(p => (
+                  <tr key={p.id}>
+                    <td>
+                      <a href={`/admin/empleados/${p.empleado.cedula}`} style={{ fontWeight: 600 }}>{nombreCompleto(p.empleado)}</a>
+                      <div className="muted mono" style={{ fontSize: ".75rem" }}>{p.empleado.cedula}</div>
+                    </td>
+                    <td className="mono" style={{ fontWeight: 600 }}>{String(p.fecha).slice(0, 10)}</td>
+                    <td>
+                      <span className={`badge ${p.tipo === "JUSTIFICACION_ANTICIPADA" ? "b-just" : "b-tarde"}`}>
+                        {p.tipo === "JUSTIFICACION_ANTICIPADA" ? "Justificación anticipada" : "Pase previo"}
+                      </span>
+                    </td>
+                    <td className="muted">{p.motivo}</td>
+                  </tr>
+                ))}
+                {pendientes.length === 0 && (
+                  <tr><td colSpan={4} className="muted" style={{ textAlign: "center", padding: 24 }}>No hay pases pendientes</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted" style={{ fontSize: ".78rem", padding: "12px 20px", margin: 0, borderTop: "1px solid var(--border)" }}>
+            Se consumen al marcar tarde ese día (queda JUSTIFICADO) o en el cierre diario si no marca (falta justificada).
+          </p>
+        </div>
+      )}
 
       {vista === "dia" && (
         <div>
@@ -251,13 +353,10 @@ export default function Asistencias() {
         {/* Filters */}
         <div className="filter-bar" style={{ marginBottom: 20 }}>
           <div className="filter-row">
-            <div className="form-group" style={{ flex: "1 1 140px" }}>
-              <label>Desde</label>
-              <input type="date" value={desde} onChange={e => setDesde(e.target.value)} />
-            </div>
-            <div className="form-group" style={{ flex: "1 1 140px" }}>
-              <label>Hasta</label>
-              <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} />
+            <RangoFechas idPrefix="hist" desde={desde} hasta={hasta} onChange={r => { setDesde(r.desde); setHasta(r.hasta); }} />
+            <div className="form-group" style={{ flex: "2 1 200px" }}>
+              <label htmlFor="hist-q">Empleado</label>
+              <input id="hist-q" value={busquedaHist} onChange={e => setBusquedaHist(e.target.value)} placeholder="Nombre o cédula…" />
             </div>
             <div className="form-group" style={{ flex: "1 1 140px" }}>
               <label>Gerencia</label>
@@ -284,21 +383,28 @@ export default function Asistencias() {
 
         {/* Table */}
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div className="table-wrap" style={{ border: "none" }}>
-            <table>
+          <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <span className="chip">{filasFiltradas.length.toLocaleString("es-VE")} registro(s)</span>
+            <AccionesReporte onExportar={exportarHistorial} deshabilitado={filasFiltradas.length === 0} />
+          </div>
+          <div className="table-wrap tabla-sticky" style={{ border: "none", maxHeight: "70vh" }}>
+            <table className="tabla-reporte">
               <thead>
                 <tr>
-                  <th>Empleado</th>
-                  <th>Fecha</th>
-                  <th>Entrada / Salida</th>
-                  <th>Estado</th>
-                  <th>Extras</th>
-                  <th>Acción</th>
+                  <ordenHist.Th k="empleado">Empleado</ordenHist.Th>
+                  <ordenHist.Th k="fecha">Fecha</ordenHist.Th>
+                  <ordenHist.Th k="entrada">Entrada / Salida</ordenHist.Th>
+                  <ordenHist.Th k="estado">Estado</ordenHist.Th>
+                  <ordenHist.Th k="extras" num>Extras</ordenHist.Th>
+                  <th className="no-print">Acción</th>
                 </tr>
               </thead>
               <tbody>
-                {filasFiltradas.map((f, i) => (
-                  <tr key={i}>
+                {filasFiltradas.length === 0 && (
+                  <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: 24 }}>Sin registros con estos filtros</td></tr>
+                )}
+                {paginar(ordenHist.ordenadas, pagHist, tamPagHist).map((f) => (
+                  <tr key={f.id ?? `${f.empleadoId}-${f.fecha}`}>
                     <td>
                       <a href={`/admin/empleados/${f.empleado.cedula}`} style={{ fontWeight: 600 }}>
                         {nombreCompleto(f.empleado)}
@@ -307,13 +413,13 @@ export default function Asistencias() {
                     <td className="mono" style={{ color: "var(--muted)" }}>{f.fecha}</td>
                     <td className="mono">{f.entrada ?? "—"} / {f.salida ?? "—"}</td>
                     <td><BadgeEstadoEntrada estadoEntrada={f.estadoEntrada} estadoOriginal={f.estadoOriginal} /></td>
-                    <td>
+                    <td className="num">
                       {f.extrasH > 0
                         ? <span style={{ color: "var(--ok)", fontWeight: 600 }}>{formatExtras(f.extrasH)}</span>
                         : <span className="muted">—</span>
                       }
                     </td>
-                    <td>
+                    <td className="no-print">
                       {(f.estadoEntrada === "TARDE" || f.estadoEntrada === "FALTA" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal)) ? (
                         <button className="btn btn-sm btn-warn-outline" onClick={() => setJust({ empleadoId: f.empleadoId, fecha: f.fecha, estado: f.estadoEntrada, cedula: f.empleado.cedula, justificacionDoc: "", justificacionObs: "" })}>
                           {f.estadoEntrada === "JUSTIFICADO" ? "Ver justificación" : "Justificar"}
@@ -327,6 +433,7 @@ export default function Asistencias() {
               </tbody>
             </table>
           </div>
+          <Paginacion page={pagHist} pageSize={tamPagHist} total={filasFiltradas.length} onPage={setPagHist} onPageSize={setTamPagHist} tamanos={[50, 100, 200, 500]} />
         </div>
       </>)}
 
@@ -370,10 +477,13 @@ export default function Asistencias() {
         <div className="modal-bg" onClick={() => setPase(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div className="modal-title"> Pase previo — permite entrar fuera de margen</div>
+              <div className="modal-title">Pase previo</div>
               <button className="modal-close" onClick={() => setPase(null)}>×</button>
             </div>
-            <p className="muted" style={{ marginBottom: 16 }}>Crea una autorización para que el empleado entre hoy fuera del margen de 60 min.</p>
+            <p className="muted" style={{ marginBottom: 16 }}>
+              Autoriza por adelantado la llegada tarde de ese día: la entrada queda JUSTIFICADA con la hora real
+              (el retraso igual se descuenta de las horas extra). Si el empleado no marca, la falta queda justificada.
+            </p>
             <div className="form-group" style={{ marginBottom: 14 }}>
               <label>Empleado <span style={{ color: "var(--bad)" }}>*</span></label>
               <Select
@@ -382,7 +492,10 @@ export default function Asistencias() {
                   const emp = empleados.find(x => x.cedula === e.target.value);
                   setPase({ ...pase!, empleadoId: emp?.id || 0, nombre: emp ? nombreCompleto(emp) : "", cedula: e.target.value });
                 }}
+                searchable
+                searchPlaceholder="Buscar por nombre o cédula…"
               >
+                <option value="">Seleccione empleado</option>
                 {empleados.filter(e => e.activo).map(e => (
                   <option key={e.cedula} value={e.cedula}>{nombreCompleto(e)} ({e.cedula})</option>
                 ))}

@@ -159,16 +159,31 @@ describe('executeFichaje — validaciones de horario', () => {
       expect(r.tipo).toBe('vacaciones');
     });
 
-    it('reposo vigente → marca directo REPOSO_MEDICO', async () => {
+    it('reposo vigente → no permite marcar (REPOSO) y no crea fila', async () => {
       setupBase({ reposo: { fin: new Date('2026-06-20'), motivo: 'gripe' } });
       const { now, hoy } = atHour(10, 30);
+      await expect(executeFichaje(1, now, hoy)).rejects.toThrow(/^REPOSO:/);
+      expect(mockPrisma.asistencia.create).not.toHaveBeenCalled();
+      expect(mockPrisma.asistencia.update).not.toHaveBeenCalled();
+    });
+
+    it('reposo vigente sobre fila automática REPOSO_MEDICO → tampoco marca', async () => {
+      setupBase({
+        reposo: { fin: new Date('2026-06-20') },
+        asistencia: { id: 11, entrada: null, salida: null, estadoEntrada: 'REPOSO_MEDICO' },
+      });
+      const { now, hoy } = atHour(8, 0);
+      await expect(executeFichaje(1, now, hoy)).rejects.toThrow(/^REPOSO:/);
+    });
+
+    it('reposo cargado después de la entrada → permite cerrar la salida', async () => {
+      const { now, hoy } = atHour(17, 0);
+      setupBase({
+        reposo: { fin: new Date('2026-06-20') },
+        asistencia: { id: 12, entrada: new Date(2026, 5, 15, 8, 0), salida: null, estadoEntrada: 'A_TIEMPO' },
+      });
       const r = await executeFichaje(1, now, hoy);
-      expect(r.tipo).toBe('reposo_medico');
-      expect(mockPrisma.asistencia.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ estadoEntrada: 'REPOSO_MEDICO' }),
-        })
-      );
+      expect(r.tipo).toBe('completado');
     });
   });
 
@@ -181,11 +196,16 @@ describe('executeFichaje — validaciones de horario', () => {
       await expect(executeFichaje(1, now, hoy)).rejects.toThrow(/^COOLDOWN:/);
     });
 
-    it('entrada + salida hoy → DUPLICADO', async () => {
-      const { now, hoy } = atHour(17, 30);
-      const entrada = new Date(now.getTime() - 9 * 3600000);
-      setupBase({ asistencia: { id: 4, entrada, salida: new Date(now.getTime() - 3600000) } });
-      await expect(executeFichaje(1, now, hoy)).rejects.toThrow(/^DUPLICADO/);
+    it('tercera marca (ya hay entrada y salida) → reemplaza la salida anterior', async () => {
+      const { now, hoy } = atHour(18, 0);
+      const entrada = new Date(2026, 5, 15, 8, 0);
+      setupBase({ asistencia: { id: 4, entrada, salida: new Date(2026, 5, 15, 17, 0), estadoEntrada: 'A_TIEMPO' } });
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.tipo).toBe('completado');
+      expect(r.extrasH).toBeCloseTo(1, 5);
+      expect(mockPrisma.asistencia.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 4 }, data: expect.objectContaining({ salida: now }) })
+      );
     });
   });
 
@@ -208,12 +228,30 @@ describe('executeFichaje — validaciones de horario', () => {
       );
     });
 
-    it('salida 18:30 → COMPLETADO + 1.5h extras', async () => {
+    const entradaA = (hh: number, mm = 0) => ({
+      id: 5, entrada: new Date(2026, 5, 15, hh, mm), salida: null, estadoEntrada: 'A_TIEMPO',
+    });
+
+    it('entrada 08:00, salida 18:30 → COMPLETADO + 1.5h extras', async () => {
       const { now, hoy } = atHour(18, 30);
-      setupBase({ asistencia: entradaHoy(now) });
+      setupBase({ asistencia: entradaA(8, 0) });
       const r = await executeFichaje(1, now, hoy);
       expect(r.tipo).toBe('completado');
       expect(r.extrasH).toBeCloseTo(1.5, 5);
+    });
+
+    it('entrada 08:45 (45 min tarde), salida 18:30 → extras 1.5h − 0.75h = 0.75h', async () => {
+      const { now, hoy } = atHour(18, 30);
+      setupBase({ asistencia: entradaA(8, 45) });
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.extrasH).toBeCloseTo(0.75, 5);
+    });
+
+    it('retraso mayor que las extras → 0 (nunca negativo)', async () => {
+      const { now, hoy } = atHour(17, 30);
+      setupBase({ asistencia: entradaA(9, 30) });
+      const r = await executeFichaje(1, now, hoy);
+      expect(r.extrasH).toBe(0);
     });
 
     it('salida en día FERIADO → todo el tiempo es extra', async () => {

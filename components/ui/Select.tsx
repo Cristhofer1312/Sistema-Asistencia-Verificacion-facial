@@ -9,11 +9,30 @@ interface SelectProps {
   className?: string;
   id?: string;
   required?: boolean;
+  /** Muestra un buscador dentro de la lista (p. ej. empleados por nombre o cédula). */
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
-export function Select({ value, onChange, children, style, className, id, required }: SelectProps) {
+// Texto plano de un label JSX: `{nombre} ({cedula})` llega como arreglo de fragmentos.
+function textoDe(n: React.ReactNode): string {
+  if (n == null || typeof n === "boolean") return "";
+  if (typeof n === "string" || typeof n === "number") return String(n);
+  if (Array.isArray(n)) return n.map(textoDe).join("");
+  if (React.isValidElement(n)) return textoDe((n.props as any).children);
+  return "";
+}
+
+// Sin mayúsculas ni acentos: "perez" encuentra "Pérez".
+const normalizar = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+// Sin puntos, guiones ni espacios: "12345678" encuentra "V-12.345.678".
+const compactar = (s: string) => s.replace(/[\s.\-]/g, "");
+
+export function Select({ value, onChange, children, style, className, id, required, searchable, searchPlaceholder }: SelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -22,6 +41,11 @@ export function Select({ value, onChange, children, style, className, id, requir
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!open) setQuery("");
+    else if (searchable) searchRef.current?.focus();
+  }, [open, searchable]);
 
   const options: {value: any, label: React.ReactNode}[] = [];
   React.Children.forEach(children, child => {
@@ -54,6 +78,20 @@ export function Select({ value, onChange, children, style, className, id, requir
   });
 
   const selectedOption = options.find(o => String(o.value) === String(value)) || options.find(o => String(o.value) === "") || options[0];
+
+  const q = normalizar(query.trim());
+  const visibles = !searchable || !q
+    ? options
+    : options.filter(o => {
+        if (String(o.value) === "") return false; // el "Seleccione…" no es un resultado
+        const t = normalizar(textoDe(o.label));
+        return t.includes(q) || compactar(t).includes(compactar(q));
+      });
+
+  function elegir(v: any) {
+    if (onChange) onChange({ target: { value: v } });
+    setOpen(false);
+  }
 
   return (
     <div style={{ position: "relative", ...style }} className={className} ref={ref}>
@@ -95,15 +133,35 @@ export function Select({ value, onChange, children, style, className, id, requir
           overflowY: "auto",
           display: "flex", flexDirection: "column"
         }}>
-          {options.map((o, i) => {
+          {searchable && (
+            <div style={{ position: "sticky", top: 0, padding: 8, background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Escape") setOpen(false);
+                  if (e.key === "Enter") {
+                    e.preventDefault(); // no enviar el formulario que contiene el select
+                    if (visibles.length > 0) elegir(visibles[0].value);
+                  }
+                }}
+                placeholder={searchPlaceholder ?? "Buscar…"}
+                aria-label={searchPlaceholder ?? "Buscar"}
+                style={{ width: "100%" }}
+              />
+            </div>
+          )}
+          {searchable && visibles.length === 0 && (
+            <div className="muted" style={{ padding: "10px 14px", fontSize: ".8125rem" }}>Sin resultados</div>
+          )}
+          {visibles.map((o, i) => {
             const isSelected = String(value) === String(o.value);
             return (
-              <div 
+              <div
                 key={i}
-                onClick={() => { 
-                  if (onChange) onChange({ target: { value: o.value } });
-                  setOpen(false); 
-                }}
+                onClick={() => elegir(o.value)}
                 style={{
                   padding: "10px 14px",
                   fontSize: ".8125rem",

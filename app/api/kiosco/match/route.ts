@@ -6,6 +6,7 @@ import { getDescriptorsCache, refreshDescriptorsCache } from "@/lib/face-cache";
 import { euclideanDistanceServer, findBestMatchServer, agreeMatches, MATCH_DISTANCE_THRESHOLD, MATCH_AMBIGUITY_MARGIN } from "@/lib/face-server";
 import { getVenezuelaDate, toDateOnly } from "@/lib/date-utils";
 import { executeFichaje } from "@/lib/fichaje";
+import { evaluarIluminacion } from "@/lib/face-quality";
 
 const KIOSCO_KEY = process.env.API_KIOSCO_KEY ?? "";
 const NONCE_TTL_MS = 2 * 60 * 1000; // 2 min
@@ -16,7 +17,9 @@ const YAW_THRESHOLD = 10; // giro leve: mismos ±10° que el cliente (facilidad 
 interface QualityData {
   earOk: boolean; // compatibilidad: ya no bloquea (parpadeo eliminado)
   poseOk: boolean;
-  brightness: number;
+  brightness: number; // brillo medio (telemetría; ya no bloquea por sí solo)
+  clipHigh?: number; // fracción de píxeles quemados (>240) en el rostro
+  clipLow?: number; // fracción de píxeles casi negros (<20) en el rostro
   centered: boolean;
   distance: boolean;
 }
@@ -46,10 +49,16 @@ async function ensureCacheLoaded(): Promise<void> {
 function validateQuality(quality: QualityData): string | null {
   // earOk ya no bloquea: el parpadeo fue reemplazado por el challenge de poses
   // poseOk tampoco bloquea aquí, porque el simple hecho de completar el challenge (verificado después) ya garantiza que es un ser vivo (liveness)
-  // Brillo mínimo 40: por debajo los descriptores pierden detalle (crítico en
-  // piel oscura) y las distancias entre personas distintas se comprimen,
-  // causando confusiones. El kiosco ya filtra frames < 40 antes de enviar.
-  if (quality.brightness < 55 || quality.brightness > 240) return "iluminación inadecuada (muy baja o quemada)";
+  // Iluminación: se evalúa el recorte (quemados/oscuros) y no el brillo medio,
+  // que penalizaba la piel oscura con luz buena. Kioscos antiguos (sin recorte)
+  // conservan la puerta por brillo medio hasta actualizarse.
+  if (Number.isFinite(quality.clipHigh) && Number.isFinite(quality.clipLow)) {
+    const falla = evaluarIluminacion({ mean: quality.brightness, clipHigh: quality.clipHigh!, clipLow: quality.clipLow! });
+    if (falla === "POCA_LUZ") return "iluminación inadecuada (muy baja)";
+    if (falla === "SOBREEXPUESTO") return "iluminación inadecuada (quemada)";
+  } else if (quality.brightness < 55 || quality.brightness > 240) {
+    return "iluminación inadecuada (muy baja o quemada)";
+  }
   if (!quality.centered) return "rostro no centrado";
   if (!quality.distance) return "distancia inadecuada";
   return null;
@@ -282,6 +291,18 @@ export async function POST(req: Request) {
       if (msg.startsWith("COOLDOWN:")) {
         const min = msg.split(":")[1];
         return NextResponse.json({ error: `Cooldown activo: espere ${min} min para volver a marcar`, tipo: "cooldown" }, { status: 429 });
+      }
+      // Reposo médico vigente: rostro reconocido pero no debe marcar (regla de RRHH).
+      if (msg.startsWith("REPOSO:")) {
+        await audit("MATCH_KIOSCO", `Rostro reconocido con reposo médico vigente (no marca): ${match.entry.nombre} ${match.entry.apellido} (${match.entry.cedula})`);
+        return NextResponse.json({
+          error: msg.slice("REPOSO:".length),
+          tipo: "reposo_medico",
+          empleadoId: match.entry.empleadoId,
+          nombre: match.entry.nombre,
+          apellido: match.entry.apellido,
+          cedula: match.entry.cedula,
+        }, { status: 403 });
       }
       if (msg.startsWith("DUPLICADO:")) {
         return NextResponse.json({ error: msg.split(":")[1], tipo: "duplicado" }, { status: 400 });

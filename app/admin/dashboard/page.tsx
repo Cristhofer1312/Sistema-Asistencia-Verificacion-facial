@@ -1,20 +1,25 @@
 "use client";
 import { useEffect, useMemo, useState, useRef } from "react";
-import { api } from "@/lib/api";
+import { api, fetchAsistencias } from "@/lib/api";
 import { BadgeEstadoEntrada } from "@/components/ui/BadgeEstadoEntrada";
+import { AvisoTruncado } from "@/components/ui/AvisoTruncado";
+import { resumenAsistencias, porcentajeAsistencia, type ResumenAsistencias } from "@/lib/metricas";
 import { useSession } from "next-auth/react";
-import { 
-  type Asistencia, 
-  type Empleado, 
+import { calcularRango, PRESETS_RANGO, type PresetRango } from "@/lib/rangos";
+import { AccionesReporte, EncabezadoImpresion, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, horasHHMM, nombreArchivo } from "@/lib/export";
+import {
+  type Asistencia,
+  type Empleado,
   type Regla,
-  type Rango,
   type Gerencia,
-  nombreCompleto, 
-  getFechasRango, 
-  getRangoLabel, 
-  getChipLabel,
+  nombreCompleto,
+  getHoyVE,
   formatExtras
 } from "@/lib/types";
+
+const RANGOS_DASHBOARD: PresetRango[] = ["hoy", "ayer", "semana", "semana_pasada", "mes", "mes_pasado"];
+type FilaGerencia = { nombre: string; activos: number; r: ResumenAsistencias; pct: number | null };
 
 const GER_COLOR: Record<string, string> = {
   "RRHH": "#6366f1",
@@ -64,12 +69,13 @@ export default function Dashboard() {
   const userGerenciaId = (session?.user as any)?.gerenciaId as number | undefined;
   const isAdminRrhh = ["ADMIN", "RRHH"].includes(userRol ?? "");
 
-  const [rango, setRango] = useState<Rango>("hoy");
+  const [rango, setRango] = useState<PresetRango>("hoy");
   const [asistencias, setAsistencias] = useState<Asistencia[]>([]);
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [regla, setRegla] = useState<Regla | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [truncado, setTruncado] = useState<{ mostradas: number; total: number } | null>(null);
   const [mounted, setMounted] = useState(false);
   const [fechas, setFechas] = useState<{ desde: string; hasta: string } | null>(null);
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
@@ -86,7 +92,7 @@ export default function Dashboard() {
     setCierreMsg(null);
     try {
       const r = await api.cierreDia();
-      setCierreMsg(`Cierre ${r.fecha}: ${r.faltas} falta(s), ${r.feriados} feriado(s), ${r.vacaciones} vacación(es), ${r.reposos} reposo(s), ${r.omitidos} omitido(s).`);
+      setCierreMsg(`Cierre ${r.fecha}: ${r.faltas} falta(s), ${r.faltasJustificadas ?? 0} falta(s) justificada(s), ${r.feriados} feriado(s), ${r.vacaciones} vacación(es), ${r.reposos} reposo(s), ${r.omitidos} omitido(s).`);
       await cargarDatos();
     } catch (e: any) {
       setCierreMsg(e.data?.error || e.message || "Error en cierre diario");
@@ -115,7 +121,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (mounted) {
-      setFechas(getFechasRango(rango));
+      setFechas(calcularRango(rango, getHoyVE()));
     }
   }, [mounted, rango]);
 
@@ -142,11 +148,12 @@ export default function Dashboard() {
         api.empleados.list(gerenciaId ?? undefined) as Promise<Empleado[]>,
         api.reglas.list() as Promise<Regla[]>,
       ]);
-      const res = await fetch(`/api/asistencias?desde=${fechas.desde}&hasta=${fechas.hasta}${gerenciaId ? `&gerenciaId=${gerenciaId}` : ''}`, { 
-        signal: abortRef.current.signal 
-      });
-      const asistenciasData = await res.json();
-      setAsistencias(asistenciasData);
+      const asis = await fetchAsistencias<Asistencia>(
+        `desde=${fechas.desde}&hasta=${fechas.hasta}${gerenciaId ? `&gerenciaId=${gerenciaId}` : ''}`,
+        abortRef.current.signal
+      );
+      setAsistencias(asis.filas);
+      setTruncado(asis.truncado ? { mostradas: asis.filas.length, total: asis.total } : null);
       setEmpleados(empleadosRes.filter(e => e.activo));
       setRegla(reglasRes[0] || null);
     } catch (e: any) {
@@ -166,19 +173,8 @@ export default function Dashboard() {
     return asistencias.filter(f => f.fecha >= fechas.desde && f.fecha <= fechas.hasta);
   }, [asistencias, fechas]);
 
-  const kpis = useMemo(() => {
-    if (!fechas) return { presentes: 0, tardes: 0, faltas: 0, feriados: 0, vacaciones: 0, reposos: 0, anticipadas: 0, justif: 0, extras: 0 };
-    const presentes = filasPeriodo.filter(f => f.entrada !== null).length;
-    const tardes = filasPeriodo.filter(f => f.estadoEntrada === "TARDE" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "TARDE")).length;
-    const faltas = filasPeriodo.filter(f => f.estadoEntrada === "FALTA" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "FALTA")).length;
-    const feriados = filasPeriodo.filter(f => f.estadoEntrada === "FERIADO").length;
-    const vacaciones = filasPeriodo.filter(f => f.estadoEntrada === "VACACIONES").length;
-    const reposos = filasPeriodo.filter(f => f.estadoEntrada === "REPOSO_MEDICO").length;
-    const anticipadas = filasPeriodo.filter(f => f.estadoSalida === "TEMPRANO").length;
-    const justif = filasPeriodo.filter(f => f.estadoEntrada === "JUSTIFICADO").length;
-    const extras = filasPeriodo.reduce((a, f) => a + (f.extrasH || 0), 0);
-    return { presentes, tardes, faltas, feriados, vacaciones, reposos, anticipadas, justif, extras };
-  }, [filasPeriodo, fechas]);
+  // Clasificación única (lib/metricas.ts): cada fila en una sola categoría, sin dobles conteos.
+  const kpis = useMemo(() => resumenAsistencias(fechas ? filasPeriodo : []), [filasPeriodo, fechas]);
 
 
 
@@ -193,8 +189,60 @@ export default function Dashboard() {
       .slice(0, 10);
   }, [filasPeriodo, fechas]);
 
-  const rangoLabel = fechas ? getRangoLabel(rango, fechas) : "Cargando…";
-  const chipLabel = fechas ? getChipLabel(rango) : "cargando";
+  // Resumen por gerencia (misma clasificación única de lib/metricas)
+  const porGerencia = useMemo<FilaGerencia[]>(() => {
+    const filas = new Map<string, Asistencia[]>();
+    for (const f of filasPeriodo) {
+      const g = getGerenciaName(f.empleado.gerencia) || "Sin gerencia";
+      if (!filas.has(g)) filas.set(g, []);
+      filas.get(g)!.push(f);
+    }
+    const activos = new Map<string, number>();
+    for (const e of empleados) {
+      const g = getGerenciaName(e.gerencia) || "Sin gerencia";
+      activos.set(g, (activos.get(g) ?? 0) + 1);
+    }
+    return Array.from(new Set([...Array.from(filas.keys()), ...Array.from(activos.keys())])).map((nombre) => {
+      const r = resumenAsistencias(filas.get(nombre) ?? []);
+      return { nombre, activos: activos.get(nombre) ?? 0, r, pct: porcentajeAsistencia(r) };
+    });
+  }, [filasPeriodo, empleados]);
+
+  const ordenGer = useOrden(porGerencia, {
+    nombre: g => g.nombre,
+    activos: g => g.activos,
+    puntuales: g => g.r.puntuales,
+    tardes: g => g.r.tardes,
+    tardesJ: g => g.r.tardesJustificadas,
+    faltas: g => g.r.faltas,
+    faltasJ: g => g.r.faltasJustificadas,
+    ausencias: g => g.r.vacaciones + g.r.reposos,
+    extras: g => g.r.extrasH,
+    pct: g => g.pct,
+  }, { clave: "nombre", dir: "asc" });
+  const pctGlobal = porcentajeAsistencia(kpis);
+
+  function exportarGerencias() {
+    if (!fechas) return;
+    descargarCSV(nombreArchivo("resumen_por_gerencia", fechas.desde, fechas.hasta), [
+      { titulo: "Gerencia", valor: (g: FilaGerencia) => g.nombre },
+      { titulo: "Empleados activos", valor: (g: FilaGerencia) => g.activos },
+      { titulo: "Puntuales", valor: (g: FilaGerencia) => g.r.puntuales },
+      { titulo: "Tardanzas", valor: (g: FilaGerencia) => g.r.tardes },
+      { titulo: "Tardanzas justificadas", valor: (g: FilaGerencia) => g.r.tardesJustificadas },
+      { titulo: "Faltas", valor: (g: FilaGerencia) => g.r.faltas },
+      { titulo: "Faltas justificadas", valor: (g: FilaGerencia) => g.r.faltasJustificadas },
+      { titulo: "Vacaciones", valor: (g: FilaGerencia) => g.r.vacaciones },
+      { titulo: "Reposos", valor: (g: FilaGerencia) => g.r.reposos },
+      { titulo: "Feriados", valor: (g: FilaGerencia) => g.r.feriados },
+      { titulo: "Salidas anticipadas", valor: (g: FilaGerencia) => g.r.salidasAnticipadas },
+      { titulo: "Horas extra (HH:MM)", valor: (g: FilaGerencia) => horasHHMM(g.r.extrasH) },
+      { titulo: "% asistencia", valor: (g: FilaGerencia) => g.pct },
+    ], ordenGer.ordenadas);
+  }
+
+  const etiquetaRango = PRESETS_RANGO.find(p => p.id === rango)?.label ?? "";
+  const rangoLabel = fechas ? `${etiquetaRango} · ${fechas.desde === fechas.hasta ? fechas.desde : `${fechas.desde} → ${fechas.hasta}`}` : "Cargando…";
 
   if (!mounted) {
     return (
@@ -224,6 +272,11 @@ export default function Dashboard() {
 
   return (
     <div>
+      <EncabezadoImpresion
+        titulo="Dashboard de asistencia"
+        detalle={`${rangoLabel}${selectedGerenciaId ? ` · Gerencia: ${gerencias.find(g => g.id === selectedGerenciaId)?.nombre ?? ""}` : ""}`}
+      />
+      {truncado && <AvisoTruncado {...truncado} />}
       {/* ── Header ── */}
       <div className="row-between" style={{ marginBottom: 24 }}>
         <div>
@@ -308,24 +361,10 @@ export default function Dashboard() {
               )}
             </div>
           )}
-          <div style={{ display: "flex", background: "var(--surface-2)", border: "1.5px solid var(--border-2)", borderRadius: "var(--r-md)", padding: 3, gap: 2 }}>
-            {(["hoy", "ayer", "semana"] as Rango[]).map(r => (
-              <button
-                key={r}
-                onClick={() => setRango(r)}
-                style={{
-                  padding: "6px 14px", borderRadius: "var(--r-sm)",
-                  border: "none",
-                  background: rango === r ? "var(--surface)" : "transparent",
-                  color: rango === r ? "var(--brand)" : "var(--muted)",
-                  fontWeight: rango === r ? 700 : 500,
-                  fontSize: ".8125rem",
-                  cursor: "pointer",
-                  boxShadow: rango === r ? "var(--sh-xs)" : "none",
-                  transition: "all .15s",
-                }}
-              >
-                {r === "hoy" ? "Hoy" : r === "ayer" ? "Ayer–Hoy" : "Semana"}
+          <div className="seg no-print" role="tablist" aria-label="Período">
+            {RANGOS_DASHBOARD.map(r => (
+              <button key={r} type="button" role="tab" aria-selected={rango === r} className={rango === r ? "active" : ""} onClick={() => setRango(r)}>
+                {PRESETS_RANGO.find(p => p.id === r)?.label}
               </button>
             ))}
           </div>
@@ -351,16 +390,88 @@ export default function Dashboard() {
       )}
 
       {/* ── KPI grid ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 14, marginBottom: 24 }}>
         <KpiCard icon="" label="Presentes" val={rango === "hoy" ? <>{kpis.presentes} <span style={{ color: "var(--muted-2)", fontSize: "1.3rem", fontWeight: 600 }}>/ {empleados.length}</span></> : kpis.presentes} color="#059669" bg="#ecfdf5" note={rango === "hoy" ? "asistencias hoy" : "entradas registradas"} />
-        <KpiCard icon="" label="Tardanzas" val={kpis.tardes} color="#d97706" bg="#fffbeb" />
-        <KpiCard icon="" label="Faltas" val={kpis.faltas} color="#dc2626" bg="#fef2f2" />
-        <KpiCard icon="" label="Justificadas" val={kpis.justif} color="#2563eb" bg="#eff6ff" note="TARDE o FALTA justif." />
+        <KpiCard icon="" label="Puntuales" val={kpis.puntuales} color="#16a34a" bg="#f0fdf4" note="a tiempo o antes" />
+        <KpiCard icon="" label="Tardanzas" val={kpis.tardes} color="#d97706" bg="#fffbeb" note="sin justificar" />
+        <KpiCard icon="" label="Tard. justificadas" val={kpis.tardesJustificadas} color="#2563eb" bg="#eff6ff" />
+        <KpiCard icon="" label="Faltas" val={kpis.faltas} color="#dc2626" bg="#fef2f2" note="sin justificar" />
+        <KpiCard icon="" label="Faltas justificadas" val={kpis.faltasJustificadas} color="#2563eb" bg="#eff6ff" />
         <KpiCard icon="" label="Feriados" val={kpis.feriados} color="#7c3aed" bg="#f5f3ff" />
         <KpiCard icon="" label="Vacaciones" val={kpis.vacaciones} color="#be185d" bg="#fdf2f8" />
         <KpiCard icon="" label="Reposos Méd." val={kpis.reposos} color="#0d9488" bg="#f0fdfa" />
-        <KpiCard icon="" label="Sal. anticipada" val={kpis.anticipadas} color="#c2410c" bg="#fff7ed" note="salida TEMPRANO" />
-        <KpiCard icon="" label="Horas extra" val={formatExtras(kpis.extras) || "00:00"} color="#0891b2" bg="#ecfeff" note="total período" />
+        <KpiCard icon="" label="Sal. anticipada" val={kpis.salidasAnticipadas} color="#c2410c" bg="#fff7ed" note="solo se marca" />
+        <KpiCard icon="" label="Horas extra" val={formatExtras(kpis.extrasH) || "00:00"} color="#0891b2" bg="#ecfeff" note="total período" />
+      </div>
+
+      {/* ── Resumen por gerencia ── */}
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Resumen por gerencia</h3>
+            <span className="muted" style={{ fontSize: ".78rem" }}>% de asistencia global: <b>{pctGlobal == null ? "—" : `${pctGlobal}%`}</b></span>
+          </div>
+          <AccionesReporte onExportar={exportarGerencias} deshabilitado={porGerencia.length === 0}>
+            <a href="/admin/consulta" className="btn btn-sm btn-ghost">Consulta detallada →</a>
+          </AccionesReporte>
+        </div>
+        <div className="table-wrap" style={{ border: "none" }}>
+          <table className="tabla-reporte">
+            <thead>
+              <tr>
+                <ordenGer.Th k="nombre">Gerencia</ordenGer.Th>
+                <ordenGer.Th k="activos" num>Activos</ordenGer.Th>
+                <ordenGer.Th k="puntuales" num>Puntuales</ordenGer.Th>
+                <ordenGer.Th k="tardes" num>Tardanzas</ordenGer.Th>
+                <ordenGer.Th k="tardesJ" num>T. just.</ordenGer.Th>
+                <ordenGer.Th k="faltas" num>Faltas</ordenGer.Th>
+                <ordenGer.Th k="faltasJ" num>F. just.</ordenGer.Th>
+                <ordenGer.Th k="ausencias" num title="Vacaciones + reposos">Vac./Rep.</ordenGer.Th>
+                <ordenGer.Th k="extras" num>Extras</ordenGer.Th>
+                <ordenGer.Th k="pct" num>% Asist.</ordenGer.Th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordenGer.ordenadas.length === 0 ? (
+                <tr><td colSpan={10} className="muted" style={{ textAlign: "center", padding: 24 }}>Sin datos en el período</td></tr>
+              ) : ordenGer.ordenadas.map(g => (
+                <tr key={g.nombre}>
+                  <td style={{ fontWeight: 600, color: "var(--ink)" }}>
+                    <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: gerColor(g.nombre), marginRight: 8 }} />
+                    {g.nombre}
+                  </td>
+                  <td className="num">{g.activos}</td>
+                  <td className="num" style={{ color: "var(--ok)", fontWeight: 600 }}>{g.r.puntuales}</td>
+                  <td className="num" style={{ color: g.r.tardes ? "var(--warn)" : undefined, fontWeight: 600 }}>{g.r.tardes}</td>
+                  <td className="num">{g.r.tardesJustificadas}</td>
+                  <td className="num" style={{ color: g.r.faltas ? "var(--bad)" : undefined, fontWeight: 600 }}>{g.r.faltas}</td>
+                  <td className="num">{g.r.faltasJustificadas}</td>
+                  <td className="num">{g.r.vacaciones + g.r.reposos}</td>
+                  <td className="num mono">{horasHHMM(g.r.extrasH)}</td>
+                  <td className="num" style={{ fontWeight: 700, color: g.pct == null ? "var(--muted)" : g.pct >= 95 ? "var(--ok)" : g.pct >= 85 ? "var(--warn)" : "var(--bad)" }}>
+                    {g.pct == null ? "—" : `${g.pct}%`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            {porGerencia.length > 1 && (
+              <tfoot>
+                <tr>
+                  <td>Total</td>
+                  <td className="num">{empleados.length}</td>
+                  <td className="num">{kpis.puntuales}</td>
+                  <td className="num">{kpis.tardes}</td>
+                  <td className="num">{kpis.tardesJustificadas}</td>
+                  <td className="num">{kpis.faltas}</td>
+                  <td className="num">{kpis.faltasJustificadas}</td>
+                  <td className="num">{kpis.vacaciones + kpis.reposos}</td>
+                  <td className="num mono">{horasHHMM(kpis.extrasH)}</td>
+                  <td className="num">{pctGlobal == null ? "—" : `${pctGlobal}%`}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
       </div>
 
       {/* ── Últimos fichajes ── */}

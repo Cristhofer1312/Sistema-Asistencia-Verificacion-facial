@@ -63,7 +63,8 @@ export async function GET(req: Request) {
       where,
       include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
       orderBy: { validoDesde: "desc" },
-      take: 100,
+      take: 5000, // antes 100: cortaba en silencio la lista de la vista
+
     });
     return NextResponse.json(permisos);
   } catch (error: any) {

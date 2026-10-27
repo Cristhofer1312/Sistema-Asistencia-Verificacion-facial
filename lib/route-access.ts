@@ -18,6 +18,8 @@ const SOLO_ADMIN_RRHH = [
   "/admin/vacaciones",
   "/admin/reposos",
   "/admin/auditoria",
+  "/admin/gerencias",
+  "/admin/diagnostico",
 ];
 const SOLO_ADMIN = ["/admin/usuarios"];
 

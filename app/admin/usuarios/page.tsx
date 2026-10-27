@@ -150,13 +150,13 @@ export default function UsuariosPage() {
                 <tr key={u.id} style={{ opacity: u.activo ? 1 : 0.5 }}>
                   <td className="muted">{u.id}</td>
                   <td style={{ fontWeight: 600 }}>{u.username}</td>
-                  <td><span className="badge b-info">{u.rol}</span></td>
+                  <td><span className="badge b-just">{u.rol}</span></td>
                   <td>{u.gerencia?.nombre || "—"}</td>
                   <td>
                     {u.activo 
                       ? <span className="badge b-tiempo">Activo</span> 
                       : <span className="badge b-inactive">Inactivo</span>}
-                    {u.claveInicial && <span className="badge b-warn" style={{ marginLeft: 6 }}>Clave inicial: Cambiar1234!</span>}
+                    {u.claveInicial && <span className="badge b-tarde" style={{ marginLeft: 6 }}>Clave inicial: Cambiar1234!</span>}
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <button type="button" className="btn btn-sm btn-ghost" onClick={() => handleAction(u.id, "toggle_activo")} style={{ marginRight: 8 }}>

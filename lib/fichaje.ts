@@ -3,6 +3,7 @@
 // La usa POST /api/kiosco/match y los unit tests de horarios.
 import { prisma } from "./prisma";
 import { audit } from "./auditoria";
+import { extrasJornadaH } from "./jornada";
 
 function parseTimeStr(timeStr: string): number {
   const [h, m] = timeStr.split(":").map(Number);
@@ -41,7 +42,14 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
     const ultimaAsistencia = await tx.asistencia.findFirst({
       where: { empleadoId, fecha: hoy },
       orderBy: { creadoEn: "desc" },
+      include: { permisoEstudiantil: { select: { horaLimite: true } } },
     });
+
+    // Reposo médico vigente: el empleado no debe marcar. Solo se deja cerrar una
+    // entrada registrada antes de cargarse el reposo (evita una marca huérfana).
+    if (reposo && !ultimaAsistencia?.entrada) {
+      throw new Error("REPOSO:Tiene un reposo médico vigente: no debe marcar asistencia");
+    }
 
     if (ultimaAsistencia && ultimaAsistencia.entrada) {
       const diffMin = Math.floor((nowVE.getTime() - ultimaAsistencia.entrada.getTime()) / 60000);
@@ -81,7 +89,16 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
         extrasH = diffMin > 0 ? diffMin / 60 : 0;
       } else {
         estadoSalida = horaActualMin < horaRefMin ? "TEMPRANO" : "COMPLETADO";
-        if (horaActualMin > horaRefMin) extrasH = (horaActualMin - horaRefMin) / 60;
+        // Extras desde la referencia, descontando la llegada posterior a la hora de
+        // entrada. Un permiso estudiantil aplicado exime el retraso hasta su hora límite.
+        const e = ultimaAsistencia.entrada;
+        const permiso = ultimaAsistencia.permisoEstudiantil;
+        extrasH = extrasJornadaH({
+          entradaMin: e ? e.getHours() * 60 + e.getMinutes() : null,
+          salidaMin: horaActualMin,
+          horaEntradaMin: parseTimeStr(permiso ? permiso.horaLimite : regla.horaEntrada),
+          horaReferenciaMin: horaRefMin,
+        });
       }
 
       await tx.asistencia.update({
@@ -113,14 +130,6 @@ export async function executeFichaje(empleadoId: number, nowVE: Date, hoy: Date)
       });
       await audit("FICHAJE_ENTRADA", `Entrada registrada para ${empleado.cedula} (VACACIONES)`);
       return { tipo: "vacaciones", msg: "Entrada registrada — VACACIONES" };
-    }
-
-    if (reposo) {
-      await tx.asistencia.create({
-        data: { empleadoId, fecha: hoy, entrada: nowVE, estadoEntrada: "REPOSO_MEDICO", reglaId: regla.id },
-      });
-      await audit("FICHAJE_ENTRADA", `Entrada registrada para ${empleado.cedula} (REPOSO_MEDICO)`);
-      return { tipo: "reposo_medico", msg: "Entrada registrada — REPOSO MÉDICO" };
     }
 
     const horaActualMin = nowVE.getHours() * 60 + nowVE.getMinutes();

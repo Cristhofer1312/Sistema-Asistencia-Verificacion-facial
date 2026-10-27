@@ -16,6 +16,25 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/**
+ * GET /api/asistencias conservando el total real: si el servidor recortó el
+ * rango (X-Truncado), la vista debe avisar en vez de mostrar totales incompletos.
+ */
+export async function fetchAsistencias<T = any>(
+  qs: string,
+  signal?: AbortSignal
+): Promise<{ filas: T[]; total: number; truncado: boolean }> {
+  const res = await fetch(`${API_BASE}/api/asistencias?${qs}`, { signal });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const filas: T[] = Array.isArray(data) ? data : [];
+  return {
+    filas,
+    total: Number(res.headers.get("X-Total-Count") ?? filas.length),
+    truncado: res.headers.get("X-Truncado") === "true",
+  };
+}
+
 export const api = {
   // Asistencias
   asistencias: {
@@ -101,6 +120,8 @@ export const api = {
       fetchJson<any>(`/api/reposos?id=${id}`, { method: "DELETE" }),
     anular: (id: number, motivoAnulacion: string) =>
       fetchJson<any>("/api/reposos/anular", { method: "POST", body: JSON.stringify({ id, motivoAnulacion }) }),
+    reactivar: (id: number) =>
+      fetchJson<any>("/api/reposos/reactivar", { method: "POST", body: JSON.stringify({ id }) }),
   },
 
   // Empleados
@@ -139,14 +160,47 @@ export const api = {
       fetchJson<any>("/api/feriados", { method: "POST", body: JSON.stringify(data) }),
   },
 
+  // Diagnóstico: pares de enrolados con firmas faciales demasiado parecidas
+  diagnostico: {
+    colisiones: (umbral?: number) =>
+      fetchJson<{
+        umbral: number;
+        umbralMatch: number;
+        enrolados: number;
+        paresRevisados: number;
+        colisiones: {
+          a: { id: number; cedula: string; nombre: string; apellido: string };
+          b: { id: number; cedula: string; nombre: string; apellido: string };
+          distancia: number;
+          bajoUmbralMatch: boolean;
+        }[];
+      }>(`/api/diagnostico/colisiones${umbral != null ? `?umbral=${umbral}` : ""}`),
+  },
+
   // Auditoría
   auditoria: {
-    list: () => fetchJson<any[]>("/api/auditoria"),
+    list: (params: { desde?: string; hasta?: string; accion?: string[]; usuario?: string; q?: string; page?: number; pageSize?: number } = {}, signal?: AbortSignal) => {
+      const sp = new URLSearchParams();
+      if (params.desde) sp.set("desde", params.desde);
+      if (params.hasta) sp.set("hasta", params.hasta);
+      if (params.accion?.length) sp.set("accion", params.accion.join(","));
+      if (params.usuario) sp.set("usuario", params.usuario);
+      if (params.q) sp.set("q", params.q);
+      if (params.page) sp.set("page", String(params.page));
+      if (params.pageSize) sp.set("pageSize", String(params.pageSize));
+      return fetchJson<{
+        filas: { id: number; accion: string; usuarioId: number | null; detalle: string; ip: string | null; ts: string; usuario: { username: string } | null }[];
+        total: number;
+        page: number;
+        pageSize: number;
+        usuarios: string[];
+      }>(`/api/auditoria?${sp}`, { signal });
+    },
   },
 
   // Admin: cierre diario (debug) — marca faltantes del día
   cierreDia: (fecha?: string) =>
-    fetchJson<{ ok: boolean; fecha: string; faltas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }>("/api/admin/cierre-dia", {
+    fetchJson<{ ok: boolean; fecha: string; faltas: number; faltasJustificadas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }>("/api/admin/cierre-dia", {
       method: "POST",
       body: JSON.stringify(fecha ? { fecha } : {}),
     }),

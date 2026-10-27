@@ -24,6 +24,10 @@ type Db = {
     findMany(a: unknown): Promise<{ id: number; inicio: Date; fin: Date }[]>;
   };
   empleado: { findMany(a: unknown): Promise<{ id: number; creadoEn: Date; activo: boolean }[]> };
+  pasePrevio: {
+    findFirst(a: unknown): Promise<{ id: number; tipo: string; motivo: string; autorizadorId: number | null } | null>;
+    update(a: unknown): Promise<unknown>;
+  };
 };
 
 /** Días hábiles (lun-vie, UTC) entre inicio y fin, ambos @db.Date. */
@@ -62,6 +66,37 @@ async function esFeriado(db: Db, fecha: Date): Promise<boolean> {
   return !!(await db.feriado.findUnique({ where: { fecha } }));
 }
 
+/** Día-calendario de Venezuela como Date UTC-midnight (coherente con @db.Date). */
+function diaVE(ahora: Date): Date {
+  const [y, m, d] = ahora.toLocaleDateString("en-CA", { timeZone: "America/Caracas" }).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+/**
+ * Estado de un día hábil ya transcurrido sin marcaje, sin feriado y sin
+ * vacación/reposo: con pase o justificación anticipada pendiente → falta
+ * justificada (y el pase queda consumido); si no → FALTA.
+ */
+async function resolverAusencia(
+  db: Db,
+  empleadoId: number,
+  fecha: Date
+): Promise<{ estadoEntrada: "FALTA" | "JUSTIFICADO"; estadoOriginal: "FALTA" | null; justificacionObs: string | null; autorizadorId: number | null }> {
+  const pase = await db.pasePrevio.findFirst({
+    where: { empleadoId, fecha, autorizado: false },
+    orderBy: { creadoEn: "asc" },
+  });
+  if (!pase) return { estadoEntrada: "FALTA", estadoOriginal: null, justificacionObs: null, autorizadorId: null };
+  await db.pasePrevio.update({ where: { id: pase.id }, data: { autorizado: true } });
+  const etiqueta = pase.tipo === "JUSTIFICACION_ANTICIPADA" ? "Justificación anticipada" : "Pase previo";
+  return {
+    estadoEntrada: "JUSTIFICADO",
+    estadoOriginal: "FALTA",
+    justificacionObs: `${etiqueta}: ${pase.motivo}`,
+    autorizadorId: pase.autorizadorId ?? null,
+  };
+}
+
 /**
  * Marca automática de un rango para un empleado.
  * - Sin fila → crea con `estado` (solo días hábiles).
@@ -69,6 +104,27 @@ async function esFeriado(db: Db, fecha: Date): Promise<boolean> {
  * - Fila FERIADO sin marcaje → convierte solo si `estado` es individual (VACACIONES/REPOSO manda).
  * - Fila con marcaje o de otro estado → se respeta (no se toca).
  */
+/**
+ * ¿autoMarkRange cambiaría algo? Misma regla, pero sobre filas ya cargadas:
+ * permite que una lectura (GET /api/asistencias) reconcilie solo los permisos
+ * que lo necesitan en vez de consultar día por día cada vez.
+ */
+export function requiereMarcado(
+  estado: EstadoAuto,
+  inicio: Date,
+  fin: Date,
+  filasPorFecha: Map<string, { entrada: unknown; estadoEntrada: string }>
+): boolean {
+  const individual = estado !== "FERIADO";
+  for (const fecha of diasHabiles(inicio, fin)) {
+    const row = filasPorFecha.get(fecha.toISOString().slice(0, 10));
+    if (!row) return true;
+    if (row.entrada != null) continue;
+    if (row.estadoEntrada === "FALTA" || (individual && row.estadoEntrada === "FERIADO")) return true;
+  }
+  return false;
+}
+
 export async function autoMarkRange(
   db: Db,
   opts: { empleadoId: number; estado: EstadoAuto; inicio: Date; fin: Date }
@@ -138,15 +194,19 @@ export async function autoMarkFeriado(db: Db, fecha: Date): Promise<{ creadas: n
 /**
  * Revierte marcas automáticas de un rango/permiso eliminado o anulado.
  * Por cada fila (estado, sin marcaje) en el rango recalcula:
- * feriado → FERIADO · otro permiso individual vigente → ese estado · si no → borra la fila.
+ * feriado → FERIADO · otro permiso individual vigente → ese estado ·
+ * día ya transcurrido → FALTA (o falta justificada si había pase), igual que
+ * el cierre diario · hoy o futuro → borra la fila (el día aún no ocurrió).
  * Las filas con marcaje no se tocan jamás.
  */
 export async function revertRange(
   db: Db,
-  opts: { empleadoId?: number; estado: EstadoAuto; inicio: Date; fin: Date }
-): Promise<{ revertidas: number; borradas: number }> {
+  opts: { empleadoId?: number; estado: EstadoAuto; inicio: Date; fin: Date; ahora?: Date }
+): Promise<{ revertidas: number; faltas: number; borradas: number }> {
   let revertidas = 0;
+  let faltas = 0;
   let borradas = 0;
+  const hoy = diaVE(opts.ahora ?? new Date());
 
   const rows = await db.asistencia.findMany({
     where: {
@@ -174,18 +234,26 @@ export async function revertRange(
       continue;
     }
 
+    if (row.fecha < hoy) {
+      // El permiso ya no cubre ese día y el empleado no marcó: faltó.
+      await db.asistencia.update({ where: { id: row.id }, data: await resolverAusencia(db, empId, row.fecha) });
+      faltas++;
+      continue;
+    }
+
     await db.asistencia.delete({ where: { id: row.id } });
     borradas++;
   }
 
-  return { revertidas, borradas };
+  return { revertidas, faltas, borradas };
 }
 
 /**
  * Cierre diario: marca a los activos sin fila de un día ya cerrado.
  * - Solo días pasados (nunca hoy ni futuro) y hábiles (lun-vie).
  * - Cota inferior por empleado: nada previo a su `creadoEn` (anti-infinito).
- * - feriado → FERIADO · vacación/reposo vigente no anulado → ese estado · si no → FALTA.
+ * - feriado → FERIADO · vacación/reposo vigente no anulado → ese estado ·
+ *   pase/justificación anticipada pendiente → JUSTIFICADO (original FALTA) · si no → FALTA.
  * - Filas existentes (con o sin fichaje) intactas. Empleados inactivos omitidos.
  */
 export async function marcarFaltantes(
@@ -194,8 +262,8 @@ export async function marcarFaltantes(
       findMany(a: unknown): Promise<{ id: number; creadoEn: Date; activo: boolean }[]>;
     };
   },
-  opts: { fecha?: Date | string } = {}
-): Promise<{ fecha: string; faltas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }> {
+  opts: { fecha?: Date | string; ahora?: Date } = {}
+): Promise<{ fecha: string; faltas: number; faltasJustificadas: number; feriados: number; vacaciones: number; reposos: number; omitidos: number }> {
   // Todo en días-calendario UTC (coherente con @db.Date): strings "YYYY-MM-DD"
   // o Dates UTC-midnight (como las que devuelve Prisma).
   const normDay = (input: Date | string): Date => {
@@ -206,18 +274,19 @@ export async function marcarFaltantes(
     return new Date(Date.UTC(input.getUTCFullYear(), input.getUTCMonth(), input.getUTCDate()));
   };
 
-  const ahora = new Date();
-  const hoyUtc = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate()));
-  const ayerUtc = new Date(hoyUtc);
-  ayerUtc.setUTCDate(ayerUtc.getUTCDate() - 1);
+  // "Hoy" es el día-calendario de Venezuela, no el de UTC: de 20:00 a 24:00 VE
+  // la fecha UTC ya es mañana y "ayer UTC" sería el día en curso.
+  const hoyVE = diaVE(opts.ahora ?? new Date());
+  const ayerVE = new Date(hoyVE);
+  ayerVE.setUTCDate(ayerVE.getUTCDate() - 1);
 
-  const fecha = opts.fecha ? normDay(opts.fecha) : ayerUtc;
-  if (fecha > ayerUtc) {
+  const fecha = opts.fecha ? normDay(opts.fecha) : ayerVE;
+  if (fecha > ayerVE) {
     throw new Error("Solo se pueden cerrar días pasados (ayer o antes), nunca hoy ni futuro");
   }
 
   const dow = fecha.getUTCDay();
-  const res = { fecha: fecha.toISOString().slice(0, 10), faltas: 0, feriados: 0, vacaciones: 0, reposos: 0, omitidos: 0 };
+  const res = { fecha: fecha.toISOString().slice(0, 10), faltas: 0, faltasJustificadas: 0, feriados: 0, vacaciones: 0, reposos: 0, omitidos: 0 };
   if (dow < 1 || dow > 5) return res; // fin de semana: nada que cerrar
 
   const feriadoEseDia = await esFeriado(db, fecha);
@@ -262,10 +331,13 @@ export async function marcarFaltantes(
       continue;
     }
 
+    // Pase o justificación anticipada pendiente → falta justificada; si no → FALTA
+    const ausencia = await resolverAusencia(db, e.id, fecha);
     await db.asistencia.create({
-      data: { empleadoId: e.id, fecha, entrada: null, salida: null, estadoEntrada: "FALTA", reglaId: null },
+      data: { empleadoId: e.id, fecha, entrada: null, salida: null, reglaId: null, ...ausencia },
     });
-    res.faltas++;
+    if (ausencia.estadoEntrada === "JUSTIFICADO") res.faltasJustificadas++;
+    else res.faltas++;
   }
 
   return res;

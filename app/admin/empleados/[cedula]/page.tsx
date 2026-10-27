@@ -1,8 +1,10 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import dynamic from "next/dynamic";
-import { api } from "@/lib/api";
+import { api, fetchAsistencias } from "@/lib/api";
+import { resumenAsistencias } from "@/lib/metricas";
 import { BadgeEstadoEntrada } from "@/components/ui/BadgeEstadoEntrada";
+import { AvisoTruncado } from "@/components/ui/AvisoTruncado";
 import {
   type Asistencia,
   type Empleado,
@@ -28,13 +30,14 @@ const FaceEnrollDynamic = dynamic(() => import("@/components/face/FaceEnroll").t
 export default function Historial({ params }: { params: Promise<{ cedula: string }> }) {
   const { addToast } = useToast();
   const [empleado, setEmpleado] = useState<Empleado | null>(null);
-  const [asistencias, setAsistencias] = useState<Asistencia[]>([]);
+  const [asistencias, setAsistenciasFilas] = useState<Asistencia[]>([]);
+  const [truncado, setTruncado] = useState<{ mostradas: number; total: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [desde, setDesde] = useState(getSemanaVE());
   const [hasta, setHasta] = useState(getHoyVE());
   const [historialCompleto, setHistorialCompleto] = useState(true); // ON: sin rango, todo el histórico
-  const [justAnticipada, setJustAnticipada] = useState<{ motivo: string } | null>(null);
+  const [justAnticipada, setJustAnticipada] = useState<{ fecha: string; motivo: string } | null>(null);
   const [creandoJustAnt, setCreandoJustAnt] = useState(false);
   const [permisos, setPermisos] = useState<PermisoEstudiantil[]>([]);
   const [guardandoPermiso, setGuardandoPermiso] = useState(false);
@@ -52,7 +55,8 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
     { v: 4, label: "Jue" }, { v: 5, label: "Vie" }, { v: 6, label: "Sáb" }, { v: 0, label: "Dom" },
   ];
 
-  const LIMITE = historialCompleto ? 2000 : 500;
+  // Un empleado no llega a 10 000 días; si el servidor recorta, se avisa (AvisoTruncado)
+  const LIMITE = 10000;
 
   function queryAsistencias(cedula: string) {
     const sp = new URLSearchParams({ empleadoCedula: cedula, take: String(LIMITE) });
@@ -60,7 +64,12 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
       sp.set("desde", desde);
       sp.set("hasta", hasta);
     }
-    return fetch(`/api/asistencias?${sp}`).then(r => r.json());
+    return fetchAsistencias<Asistencia>(sp.toString());
+  }
+
+  function setAsistencias(res: Awaited<ReturnType<typeof queryAsistencias>>) {
+    setAsistenciasFilas(res.filas);
+    setTruncado(res.truncado ? { mostradas: res.filas.length, total: res.total } : null);
   }
 
   useEffect(() => {
@@ -95,40 +104,29 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params, desde, hasta, historialCompleto]);
 
-  const esTar = (f: Asistencia) => f.estadoEntrada === "TARDE" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "TARDE");
-  const esFal = (f: Asistencia) => f.estadoEntrada === "FALTA" || (f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "FALTA");
-  const tardes = asistencias.filter(esTar).length;
-  const faltas = asistencias.filter(esFal).length;
-  const justs  = asistencias.filter(f => f.estadoEntrada === "JUSTIFICADO").length;
-  const justTarde = asistencias.filter(f => f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "TARDE").length;
-  const justFalta = asistencias.filter(f => f.estadoEntrada === "JUSTIFICADO" && f.estadoOriginal === "FALTA").length;
-  const tempranos = asistencias.filter(f => f.estadoEntrada === "TEMPRANO").length;
-  const aTiempo = asistencias.filter(f => f.estadoEntrada === "A_TIEMPO").length;
-  const conEntrada = asistencias.filter(f => !!f.entrada).length;
-  const feriados = asistencias.filter(f => f.estadoEntrada === "FERIADO").length;
-  const vacaciones = asistencias.filter(f => f.estadoEntrada === "VACACIONES").length;
-  const reposos = asistencias.filter(f => f.estadoEntrada === "REPOSO_MEDICO").length;
-  const salTemprano = asistencias.filter(f => f.estadoSalida === "TEMPRANO").length;
+  // Conteos de lib/metricas: cada día en una sola categoría (sin dobles conteos)
+  const r = resumenAsistencias(asistencias);
   const salCompletadas = asistencias.filter(f => f.estadoSalida === "COMPLETADO").length;
-  const extras = asistencias.reduce((a, f) => a + (f.extrasH || 0), 0);
-  const presentismo = asistencias.length > 0 ? Math.round((conEntrada / asistencias.length) * 100) : 0;
-  const topeAlcanzado = asistencias.length >= LIMITE;
+  // Presentismo sobre días laborables exigibles (feriado/vacaciones/reposo no cuentan)
+  const exigibles = asistencias.length - r.feriados - r.vacaciones - r.reposos;
+  const asistidos = r.puntuales + r.tardes + r.tardesJustificadas;
+  const presentismo = exigibles > 0 ? Math.round((asistidos / exigibles) * 100) : 0;
 
   // Verificar si hoy es laborable y no hay entrada registrada
   const hoy = getHoyVE();
   const hoyDate = toDateOnly(getVenezuelaDate());
   const tieneEntradaHoy = asistencias.some(f => f.fecha === hoy && f.entrada);
-  const esFeriadoHoy = asistencias.some(f => f.fecha === hoy && f.estadoEntrada === "FERIADO");
-  const esVacacionesHoy = asistencias.some(f => f.fecha === hoy && f.estadoEntrada === "VACACIONES");
-  const puedeJustificarHoy = empleado?.activo && isLaborable(hoyDate) && !tieneEntradaHoy && !esFeriadoHoy && !esVacacionesHoy;
+  const hoyCubierto = asistencias.some(f => f.fecha === hoy && ["FERIADO", "VACACIONES", "REPOSO_MEDICO"].includes(f.estadoEntrada));
+  // Por defecto se propone hoy si aún aplica; si no, el próximo día que elija RRHH
+  const fechaJustDefecto = isLaborable(hoyDate) && !tieneEntradaHoy && !hoyCubierto ? hoy : "";
 
   async function handleCrearJustAnticipada() {
-    if (!justAnticipada?.motivo || !empleado) return;
+    if (!justAnticipada?.motivo || !justAnticipada.fecha || !empleado) return;
     setCreandoJustAnt(true);
     try {
-      await api.pases.create({
+      const res: any = await api.pases.create({
         empleadoId: empleado.id,
-        fecha: hoy,
+        fecha: justAnticipada.fecha,
         motivo: justAnticipada.motivo,
         tipo: "JUSTIFICACION_ANTICIPADA",
       });
@@ -136,7 +134,13 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
       // Recargar asistencias (respeta toggle completo/rango)
       const asis = await queryAsistencias(empleado.cedula);
       setAsistencias(asis);
-      addToast({ type: 'success', title: 'Justificación creada', message: 'La justificación anticipada se guardó correctamente' });
+      addToast({
+        type: 'success',
+        title: 'Justificación creada',
+        message: res?.justificadoDirectamente
+          ? 'El registro de ese día quedó JUSTIFICADO'
+          : 'Se aplicará al marcar tarde o, si no marca, la falta quedará justificada',
+      });
     } catch (e: any) {
       addToast({ type: 'error', title: 'Error', message: e.data?.error || e.message || "Error creando justificación anticipada" });
     } finally {
@@ -294,12 +298,13 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
             </p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {puedeJustificarHoy && (
+            {empleado.activo && (
               <button
-                className="btn btn-warn"
-                onClick={() => setJustAnticipada({ motivo: "" })}
+                className="btn btn-warn-outline btn-sm"
+                title="Justifica por adelantado la tardanza o ausencia de un día"
+                onClick={() => setJustAnticipada({ fecha: fechaJustDefecto, motivo: "" })}
               >
-                 Justificar entrada de hoy
+                Justificación anticipada
               </button>
             )}
             <button
@@ -340,15 +345,14 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {[
-            { label: "Presentismo", val: `${presentismo}%`, cls: "b-tiempo", title: "Registros con entrada sobre el total visible" },
-            { label: "Asistencias", val: conEntrada, cls: "b-comp", title: "Registros con hora de entrada" },
-            { label: "A tiempo", val: aTiempo, cls: "b-tiempo", title: "Entradas dentro de la ventana" },
-            { label: "Tempranos", val: tempranos, cls: "b-temp", title: "Entradas antes de la hora esperada" },
-            { label: "Tardanzas", val: tardes, cls: "b-tarde", title: "Tardes (incluye justificadas con origen TARDE)" },
-            { label: "Faltas", val: faltas, cls: "b-falta", title: "Faltas (incluye justificadas con origen FALTA)" },
-            { label: "Justificadas", val: justs, cls: "b-just", title: `Justificadas: ${justTarde} por tardanza · ${justFalta} por falta` },
-            { label: "Extras", val: formatExtras(extras) || "00:00", cls: "b-comp", title: "Horas extras acumuladas" },
-            { label: "Sal. temprana", val: salTemprano, cls: "b-tarde", title: `Salidas antes de referencia (completadas: ${salCompletadas})` },
+            { label: "Presentismo", val: `${presentismo}%`, title: `Días asistidos (${asistidos}) sobre días exigibles (${exigibles}); excluye feriados, vacaciones y reposos` },
+            { label: "Puntuales", val: r.puntuales, title: "A tiempo o antes de la hora de entrada" },
+            { label: "Tardanzas", val: r.tardes, title: "Llegadas tarde sin justificar" },
+            { label: "Tard. justif.", val: r.tardesJustificadas, title: "Llegadas tarde justificadas" },
+            { label: "Faltas", val: r.faltas, title: "Ausencias sin justificar" },
+            { label: "Faltas justif.", val: r.faltasJustificadas, title: "Ausencias justificadas" },
+            { label: "Extras", val: formatExtras(r.extrasH) || "00:00", title: "Horas extra acumuladas (ya descontado el retraso)" },
+            { label: "Sal. anticipada", val: r.salidasAnticipadas, title: `Salidas antes de la hora de referencia (completadas: ${salCompletadas})` },
           ].map(s => (
             <div key={s.label} title={s.title} style={{ textAlign: "center", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "8px 14px", minWidth: 86, flex: "1 1 auto" }}>
               <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "var(--ink)" }}>{s.val}</div>
@@ -357,13 +361,9 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
           ))}
         </div>
         <p className="muted" style={{ fontSize: ".78rem", marginTop: 10, marginBottom: 0 }}>
-          Feriados: {feriados} · Vacaciones: {vacaciones} · Reposos: {reposos} · Salidas completadas: {salCompletadas}
+          Feriados: {r.feriados} · Vacaciones: {r.vacaciones} · Reposos: {r.reposos} · Salidas completadas: {salCompletadas}
         </p>
-        {topeAlcanzado && (
-          <p style={{ fontSize: ".78rem", marginTop: 6, marginBottom: 0, color: "var(--warn)" }}>
-            Se alcanzó el tope de {LIMITE} registros: refine por rango para ver el resto.
-          </p>
-        )}
+        {truncado && <div style={{ marginTop: 10 }}><AvisoTruncado {...truncado} /></div>}
       </div>
 
       {/* Otorgar: vacaciones / permiso estudiantil / reposo médico */}
@@ -573,25 +573,35 @@ export default function Historial({ params }: { params: Promise<{ cedula: string
         <div className="modal-bg" onClick={() => setJustAnticipada(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div className="modal-title"> Justificar entrada de hoy</div>
+              <div className="modal-title">Justificación anticipada</div>
               <button className="modal-close" onClick={() => setJustAnticipada(null)}>×</button>
             </div>
             <p className="muted" style={{ marginBottom: 16 }}>
-              Permitirá a <b>{nombreCompleto(empleado!)}</b> fichar entrada aunque exceda el margen de tardanza.
-              Quedará registrada como <span className="badge b-just">JUSTIFICADO</span> con la hora real.
+              Si <b>{nombreCompleto(empleado!)}</b> llega tarde ese día, la entrada queda como
+              <span className="badge b-just" style={{ margin: "0 4px" }}>JUSTIFICADO</span>con la hora real; si no marca,
+              el cierre diario registra la falta como justificada. El retraso igual se descuenta de las horas extra.
             </p>
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label>Fecha <span style={{ color: "var(--bad)" }}>*</span></label>
+              <input
+                type="date"
+                value={justAnticipada.fecha}
+                min={hoy}
+                onChange={e => setJustAnticipada({ ...justAnticipada, fecha: e.target.value })}
+              />
+            </div>
             <div className="form-group">
               <label>Motivo <span style={{ color: "var(--bad)" }}>*</span></label>
               <textarea
                 rows={3}
                 value={justAnticipada.motivo}
-                onChange={e => setJustAnticipada({ motivo: e.target.value })}
+                onChange={e => setJustAnticipada({ ...justAnticipada, motivo: e.target.value })}
                 placeholder="Ej. Retraso por trámite médico, cita previa..."
                 required
               />
             </div>
             <div className="modal-footer">
-              <button className="btn btn-warn" onClick={handleCrearJustAnticipada} disabled={creandoJustAnt || !justAnticipada.motivo}>
+              <button className="btn btn-primary" onClick={handleCrearJustAnticipada} disabled={creandoJustAnt || !justAnticipada.motivo || !justAnticipada.fecha}>
                 {creandoJustAnt ? "Guardando…" : " Crear justificación anticipada"}
               </button>
               <button className="btn btn-ghost" onClick={() => setJustAnticipada(null)}>Cancelar</button>

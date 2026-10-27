@@ -7,9 +7,9 @@ import {
   FACE_API_CONFIG,
   calculateEAR,
   estimateHeadPose,
-  estimateBrightness
+  estimateLuminanceStats
 } from '@/lib/face-api';
-import { FACE_QUALITY } from '@/lib/face-quality';
+import { FACE_QUALITY, evaluarIluminacion } from '@/lib/face-quality';
 import { averageDescriptors } from '@/lib/descriptor-utils';
 
 interface FaceEnrollProps {
@@ -24,8 +24,6 @@ const QUALITY_THRESHOLDS = {
   maxPoseAngle: Q.maxAngle,           // grados yaw/pitch
   minFaceSize: Q.minFaceSize,         // px mínimo ancho rostro
   maxFaceSize: Q.maxFaceSize,         // px máximo (muy cerca deforma)
-  minBrightness: Q.minBrightness,     // 0-255 (igual que el kiosco)
-  maxBrightness: Q.maxBrightness,
   centerTolerance: Q.centerTolerance, // fracción del ancho
   requiredSamples: Q.samples,        // buenas CONSECUTIVAS (estricto)
 };
@@ -164,10 +162,11 @@ export function FaceEnroll({ onCapture, onError }: FaceEnrollProps) {
             issues.push(boxCenterX < video.videoWidth / 2 ? 'Muévase a la derecha' : 'Muévase a la izquierda');
           }
 
-          // 5. Iluminación (brillo promedio en región del rostro)
-          const brightness = estimateBrightness(video, detection.box);
-          if (brightness < QUALITY_THRESHOLDS.minBrightness) issues.push('Poca iluminación (igual que exige el kiosco)');
-          if (brightness > QUALITY_THRESHOLDS.maxBrightness) issues.push('Sobreexpuesto');
+          // 5. Iluminación (recorte de píxeles quemados/oscuros en el rostro, igual que el kiosco)
+          const light = estimateLuminanceStats(video, detection.box);
+          const fallaLuz = evaluarIluminacion(light);
+          if (fallaLuz === 'POCA_LUZ') issues.push('Poca iluminación (igual que exige el kiosco)');
+          if (fallaLuz === 'SOBREEXPUESTO') issues.push('Sobreexpuesto');
 
           const ok = issues.length === 0;
           setQuality({ ok, issues });
@@ -177,7 +176,7 @@ export function FaceEnroll({ onCapture, onError }: FaceEnrollProps) {
           pushSample(descriptor, ok);
 
           // Debug info visible
-          setDebugInfo(`Score: ${(detection.score*100).toFixed(0)}% | W: ${faceWidth.toFixed(0)}px | Brillo: ${brightness.toFixed(0)} | Yaw: ${pose.yaw.toFixed(0)}° Pitch: ${pose.pitch.toFixed(0)}° | Muestras: ${recentGoodDescriptorsRef.current.length}/${QUALITY_THRESHOLDS.requiredSamples}`);
+          setDebugInfo(`Score: ${(detection.score*100).toFixed(0)}% | W: ${faceWidth.toFixed(0)}px | Luz: media ${light.mean.toFixed(0)}, quemados ${(light.clipHigh * 100).toFixed(0)}%, oscuros ${(light.clipLow * 100).toFixed(0)}% | Yaw: ${pose.yaw.toFixed(0)}° Pitch: ${pose.pitch.toFixed(0)}° | Muestras: ${recentGoodDescriptorsRef.current.length}/${QUALITY_THRESHOLDS.requiredSamples}`);
         } else if (detections.length > 1) {
           setQuality({ ok: false, issues: ['Múltiples rostros detectados - solo uno'] });
           setDetection(null);

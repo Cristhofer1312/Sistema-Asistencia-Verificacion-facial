@@ -166,7 +166,8 @@ describe('executeFichaje — permiso estudiantil', () => {
     expect(data.justificacionObs).toMatch(/Pase previo/);
   });
 
-  it('la salida no cambia por el permiso (extras por horaReferencia)', async () => {
+  // El permiso exime el retraso hasta su hora límite (regla de RRHH).
+  it('con permiso aplicado: entrada 10:00 (permiso hasta 10:30), salida 18:00 → 1h extra completa', async () => {
     const { now, hoy } = atDate(16, 18, 0);
     setupBase({
       permiso: permiso(),
@@ -175,10 +176,36 @@ describe('executeFichaje — permiso estudiantil', () => {
         entrada: new Date(now.getTime() - 8 * 3600000),
         salida: null,
         estadoEntrada: 'A_TIEMPO',
+        permisoEstudiantil: { horaLimite: '10:30' },
       },
     });
     const r = await executeFichaje(1, now, hoy);
     expect(r.tipo).toBe('completado');
     expect(r.extrasH).toBeCloseTo(1, 5);
+  });
+
+  it('con permiso aplicado pero llegada 11:00 (30 min después del permiso) → descuenta solo 30 min', async () => {
+    const { now, hoy } = atDate(16, 18, 0);
+    setupBase({
+      permiso: permiso(),
+      asistencia: {
+        id: 6,
+        entrada: new Date(now.getTime() - 7 * 3600000),
+        salida: null,
+        estadoEntrada: 'TARDE',
+        permisoEstudiantil: { horaLimite: '10:30' },
+      },
+    });
+    const r = await executeFichaje(1, now, hoy);
+    expect(r.extrasH).toBeCloseTo(0.5, 5);
+  });
+
+  it('sin permiso aplicado en la fila: entrada 10:00, salida 18:00 → el retraso (2h) absorbe la 1h', async () => {
+    const { now, hoy } = atDate(16, 18, 0);
+    setupBase({
+      asistencia: { id: 7, entrada: new Date(now.getTime() - 8 * 3600000), salida: null, estadoEntrada: 'TARDE' },
+    });
+    const r = await executeFichaje(1, now, hoy);
+    expect(r.extrasH).toBe(0);
   });
 });

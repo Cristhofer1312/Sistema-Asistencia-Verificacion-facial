@@ -275,6 +275,7 @@ enum AccionAuditoria {
   CREAR_REPOSO
   ELIMINAR_REPOSO
   ANULAR_REPOSO
+  REACTIVAR_REPOSO
   CAMBIO_CLAVE
   CREAR_JUSTIFICACION_ANTICIPADA
   CREAR_PERMISO_ESTUDIO
@@ -302,6 +303,9 @@ model LogAuditoria {
   @@index([ts])
   @@index([usuarioId])
   @@index([accion])
+  // Consulta de auditoría: filtra por acción/usuario y ordena por fecha
+  @@index([accion, ts])
+  @@index([usuarioId, ts])
 }
 
 // ─────────────────────────────────────────────────────────────

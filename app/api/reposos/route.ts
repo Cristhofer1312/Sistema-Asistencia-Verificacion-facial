@@ -102,7 +102,7 @@ export async function GET(req: Request) {
     where,
     include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
     orderBy: { inicio: "desc" },
-    take: 500,
+    take: 5000, // antes 500: cortaba en silencio la lista de la vista
   });
 
   return NextResponse.json(

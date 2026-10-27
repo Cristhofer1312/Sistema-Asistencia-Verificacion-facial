@@ -8,6 +8,7 @@ import * as faceapi from '@vladmandic/face-api';
 // Umbrales centralizados en lib/face-server.ts (fuente única, sin duplicar).
 // Se re-exportan aquí por compatibilidad con importadores existentes.
 import { MATCH_DISTANCE_THRESHOLD, MATCH_AMBIGUITY_MARGIN } from './face-server';
+import type { EstadoLuz } from './face-quality';
 export { MATCH_DISTANCE_THRESHOLD, MATCH_AMBIGUITY_MARGIN };
 
 const MODEL_URL = '/models';
@@ -35,9 +36,12 @@ export async function loadFaceApiModels(): Promise<void> {
   if (modelsLoaded) return;
   
   // 1. Forzar el uso de WebGL para aceleración por GPU (maximiza potencia de cálculo)
+  // El tf empaquetado por @vladmandic/face-api trae setBackend/ready en runtime,
+  // pero sus tipos no los declaran (rompía `next build`).
+  const tf = faceapi.tf as unknown as { setBackend(b: string): Promise<boolean>; ready(): Promise<void> };
   try {
-    await faceapi.tf.setBackend('webgl');
-    await faceapi.tf.ready();
+    await tf.setBackend('webgl');
+    await tf.ready();
   } catch (e) {
     console.warn("[FaceAPI] WebGL no disponible, usando backend de respaldo", e);
   }
@@ -241,9 +245,11 @@ export function estimateHeadPose(landmarks: faceapi.FaceLandmarks68): { yaw: num
 }
 
 /**
- * Estima brillo promedio en región del rostro (0-255)
+ * Estadística de luminancia en la región del rostro: brillo medio (0-255) y
+ * fracción de píxeles quemados (>240) y oscuros (<20). Los recortes no
+ * dependen del tono de piel, a diferencia del promedio.
  */
-export function estimateBrightness(video: HTMLVideoElement, box: faceapi.Box): number {
+export function estimateLuminanceStats(video: HTMLVideoElement, box: faceapi.Box): EstadoLuz {
   const tempCanvas = document.createElement('canvas');
   const ctx = tempCanvas.getContext('2d')!;
   const scale = 0.25;
@@ -251,11 +257,17 @@ export function estimateBrightness(video: HTMLVideoElement, box: faceapi.Box): n
   tempCanvas.height = box.height * scale;
   ctx.drawImage(video, box.x, box.y, box.width, box.height, 0, 0, tempCanvas.width, tempCanvas.height);
   const data = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height).data;
+  const n = data.length / 4;
   let sum = 0;
+  let clipHigh = 0;
+  let clipLow = 0;
   for (let i = 0; i < data.length; i += 4) {
-    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sum += y;
+    if (y > 240) clipHigh++;
+    if (y < 20) clipLow++;
   }
-  return sum / (data.length / 4);
+  return { mean: sum / n, clipHigh: clipHigh / n, clipLow: clipLow / n };
 }
 
 /**

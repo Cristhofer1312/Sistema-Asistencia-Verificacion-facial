@@ -29,8 +29,7 @@ describe('umbrales centralizados', () => {
   });
 
   it('la referencia enrolada exige >= calidad que el probe del kiosco', () => {
-    expect(FACE_QUALITY.enroll.minBrightness).toBeGreaterThanOrEqual(FACE_QUALITY.probe.minBrightness);
-    expect(FACE_QUALITY.enroll.minBrightness).toBeGreaterThanOrEqual(40);
+    // La puerta de luz es un único objeto (FACE_QUALITY.light) para registro y kiosco.
     expect(FACE_QUALITY.enroll.minScore).toBeGreaterThanOrEqual(FACE_QUALITY.probe.minScore);
     expect(FACE_QUALITY.enroll.maxFaceSize).toBeLessThanOrEqual(300);
     expect(FACE_QUALITY.enroll.samples).toBeGreaterThanOrEqual(5);

@@ -1,9 +1,20 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { api } from "@/lib/api";
-import { type Empleado, nombreCompleto } from "@/lib/types";
+import { type Empleado, nombreCompleto, getGerenciaName, getHoyVE } from "@/lib/types";
 import { formatFriendlyDate } from "@/lib/date-utils";
 import { Select } from "@/components/ui/Select";
+import { RangoFechas, AccionesReporte, EncabezadoImpresion, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
+import { diasDelRango } from "@/lib/rangos";
+
+const iso = (s: string) => String(s).slice(0, 10);
+function situacionDe(v: { anulada: boolean; inicio: string; fin: string }, hoy: string) {
+  if (v.anulada) return { label: "Anulada", cls: "b-inactive" };
+  if (iso(v.fin) < hoy) return { label: "Finalizada", cls: "b-inactive" };
+  if (iso(v.inicio) > hoy) return { label: "Programada", cls: "b-just" };
+  return { label: "En curso", cls: "b-vac" };
+}
 
 type Vacacion = {
   id: number;
@@ -138,19 +149,51 @@ export default function Vacaciones() {
     }
   }
 
+  const hoy = getHoyVE();
+  const orden = useOrden(vacaciones, {
+    empleado: v => `${v.empleado.apellido} ${v.empleado.nombre}`,
+    gerencia: v => getGerenciaName(v.empleado.gerencia),
+    inicio: v => iso(v.inicio),
+    dias: v => diasDelRango(iso(v.inicio), iso(v.fin)),
+    situacion: v => situacionDe(v, hoy).label,
+  }, { clave: "inicio", dir: "desc" });
+  const totalDias = vacaciones.filter(v => !v.anulada).reduce((a, v) => a + diasDelRango(iso(v.inicio), iso(v.fin)), 0);
+
+  function exportar() {
+    descargarCSV(nombreArchivo("vacaciones", filtros.desde, filtros.hasta), [
+      { titulo: "Cédula", valor: (v: Vacacion) => v.empleado.cedula },
+      { titulo: "Apellido", valor: (v: Vacacion) => v.empleado.apellido },
+      { titulo: "Nombre", valor: (v: Vacacion) => v.empleado.nombre },
+      { titulo: "Gerencia", valor: (v: Vacacion) => getGerenciaName(v.empleado.gerencia) },
+      { titulo: "Inicio", valor: (v: Vacacion) => iso(v.inicio) },
+      { titulo: "Fin", valor: (v: Vacacion) => iso(v.fin) },
+      { titulo: "Días calendario", valor: (v: Vacacion) => diasDelRango(iso(v.inicio), iso(v.fin)) },
+      { titulo: "Motivo", valor: (v: Vacacion) => v.motivo },
+      { titulo: "Situación", valor: (v: Vacacion) => situacionDe(v, hoy).label },
+      { titulo: "Motivo de anulación", valor: (v: Vacacion) => v.motivoAnulacion },
+    ], orden.ordenadas);
+  }
+
   if (loading) {
     return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "400px" }}>Cargando…</div>;
   }
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ marginBottom: 4 }}>Vacaciones</h2>
-        <p className="muted">Asignación por empleado · rango inicio/fin · sin solapamiento</p>
+      <EncabezadoImpresion
+        titulo="Vacaciones otorgadas"
+        detalle={[filtros.desde || filtros.hasta ? `Período ${filtros.desde || "inicio"} a ${filtros.hasta || "—"}` : "Todos los períodos", filtros.q && `Búsqueda: "${filtros.q}"`].filter(Boolean).join(" · ")}
+      />
+      <div className="page-head">
+        <div>
+          <h2>Vacaciones</h2>
+          <p className="page-sub">Asignación por empleado · rango inicio/fin · sin solapamiento</p>
+        </div>
+        <AccionesReporte onExportar={exportar} deshabilitado={vacaciones.length === 0} />
       </div>
 
       {/* Form */}
-      <div className="card">
+      <div className="card no-print">
         <h3 style={{ marginBottom: 18 }}> Asignar vacaciones</h3>
         {error && <div className="alert alert-warn" style={{ marginBottom: 16 }}><span></span><span>{error}</span></div>}
         <form onSubmit={handleSubmit}>
@@ -162,6 +205,8 @@ export default function Vacaciones() {
                 value={formData.empleadoId}
                 onChange={e => setFormData({ ...formData, empleadoId: e.target.value })}
                 required
+                searchable
+                searchPlaceholder="Buscar por nombre o cédula…"
               >
                 <option value="">Seleccione empleado</option>
                 {empleados.map(emp => (
@@ -217,8 +262,8 @@ export default function Vacaciones() {
       </div>
 
       {/* Filtros */}
-      <div className="card" style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 14 }}> Buscar registros otorgados</h3>
+      <div className="card no-print" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}>Buscar registros otorgados</h3>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div className="form-group" style={{ flex: "2 1 220px" }}>
             <label htmlFor="vac-f-q">Empleado o motivo</label>
@@ -239,14 +284,7 @@ export default function Vacaciones() {
               ))}
             </Select>
           </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="vac-f-desde">Desde</label>
-            <input id="vac-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
-          </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="vac-f-hasta">Hasta</label>
-            <input id="vac-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
-          </div>
+          <RangoFechas idPrefix="vac-f" permitirTodo desde={filtros.desde} hasta={filtros.hasta} onChange={r => setFiltros({ ...filtros, ...r })} />
           <div className="form-group" style={{ flex: "1 1 140px" }}>
             <label htmlFor="vac-f-est">Estado</label>
             <Select id="vac-f-est" value={filtros.estado} onChange={e => setFiltros({ ...filtros, estado: e.target.value })}>
@@ -276,50 +314,52 @@ export default function Vacaciones() {
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3>Vacaciones registradas</h3>
-          <span className="chip">{vacaciones.length} períodos</span>
+          <span className="chip">{vacaciones.length} período(s) · {totalDias} día(s) vigentes</span>
         </div>
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table>
+        <div className="table-wrap tabla-sticky" style={{ border: "none", maxHeight: "70vh" }}>
+          <table className="tabla-reporte">
             <thead>
               <tr>
-                <th>Empleado</th>
-                <th>Período</th>
+                <orden.Th k="empleado">Empleado</orden.Th>
+                <orden.Th k="gerencia">Gerencia</orden.Th>
+                <orden.Th k="inicio">Período</orden.Th>
+                <orden.Th k="dias" num>Días</orden.Th>
                 <th>Motivo</th>
-                <th>Estado</th>
-                <th>Acción</th>
+                <orden.Th k="situacion">Situación</orden.Th>
+                <th className="no-print">Acción</th>
               </tr>
             </thead>
             <tbody>
               {vacaciones.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: "center", padding: "32px" }}>
-                    <p className="muted">No hay vacaciones registradas</p>
+                  <td colSpan={7} style={{ textAlign: "center", padding: "32px" }}>
+                    <p className="muted">No hay vacaciones con estos filtros</p>
                   </td>
                 </tr>
               ) : (
-                vacaciones.map((v) => (
+                orden.ordenadas.map((v) => {
+                  const sit = situacionDe(v, hoy);
+                  return (
                   <tr key={v.id} style={{ opacity: v.anulada ? 0.65 : 1 }}>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{nombreCompleto(v.empleado)}</div>
+                      <a href={`/admin/empleados/${v.empleado.cedula}`} style={{ fontWeight: 600 }}>{nombreCompleto(v.empleado)}</a>
                       <div className="muted mono" style={{ fontSize: ".75rem" }}>{v.empleado.cedula}</div>
                     </td>
-                    <td className="mono" style={{ fontWeight: 600 }}>
+                    <td style={{ fontSize: ".8125rem" }}>{getGerenciaName(v.empleado.gerencia)}</td>
+                    <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
                       {formatFriendlyDate(v.inicio)} → {formatFriendlyDate(v.fin)}
                     </td>
+                    <td className="num">{diasDelRango(iso(v.inicio), iso(v.fin))}</td>
                     <td className="muted">{v.motivo || "—"}</td>
                     <td>
-                      {v.anulada ? (
-                        <div>
-                          <span className="badge b-inactive">ANULADA</span>
-                          <div className="muted" style={{ fontSize: ".72rem", marginTop: 4, maxWidth: 220 }}>
-                            Motivo: {v.motivoAnulacion || "—"}
-                          </div>
+                      <span className={`badge ${sit.cls}`}>{sit.label}</span>
+                      {v.anulada && (
+                        <div className="muted" style={{ fontSize: ".72rem", marginTop: 4, maxWidth: 220 }}>
+                          Motivo: {v.motivoAnulacion || "—"}
                         </div>
-                      ) : (
-                        <span className="badge b-tiempo">VIGENTE</span>
                       )}
                     </td>
-                    <td>
+                    <td className="no-print">
                       {!v.anulada && (
                         <button
                           className="btn btn-sm btn-danger"
@@ -331,7 +371,8 @@ export default function Vacaciones() {
                       )}
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

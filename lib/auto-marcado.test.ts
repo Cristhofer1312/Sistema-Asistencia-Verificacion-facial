@@ -1,13 +1,45 @@
 // lib/auto-marcado.test.ts — Unit tests de marcado automático y reversión
 import { describe, it, expect, beforeEach } from 'vitest';
-import { diasHabiles, autoMarkRange, autoMarkFeriado, revertRange, solapeConOtroPermiso, marcarFaltantes } from './auto-marcado';
+import { diasHabiles, autoMarkRange, autoMarkFeriado, revertRange, solapeConOtroPermiso, marcarFaltantes, requiereMarcado } from './auto-marcado';
 
 const D = (s: string) => new Date(s + "T00:00:00Z");
 
+describe("requiereMarcado", () => {
+  // 2026-06-15 lunes → 2026-06-19 viernes (el fin de semana no cuenta)
+  const filas = (pares: [string, { entrada: unknown; estadoEntrada: string }][]) => new Map(pares);
+  const completa = (estado: string) =>
+    filas(["15", "16", "17", "18", "19"].map(d => [`2026-06-${d}`, { entrada: null, estadoEntrada: estado }]));
+
+  it("no hace falta si todos los días hábiles ya están marcados", () => {
+    expect(requiereMarcado("VACACIONES", D("2026-06-15"), D("2026-06-21"), completa("VACACIONES"))).toBe(false);
+  });
+
+  it("hace falta si falta un día o hay una FALTA que convertir", () => {
+    const m = completa("VACACIONES");
+    m.delete("2026-06-17");
+    expect(requiereMarcado("VACACIONES", D("2026-06-15"), D("2026-06-19"), m)).toBe(true);
+    const f = completa("VACACIONES");
+    f.set("2026-06-18", { entrada: null, estadoEntrada: "FALTA" });
+    expect(requiereMarcado("REPOSO_MEDICO", D("2026-06-15"), D("2026-06-19"), f)).toBe(true);
+  });
+
+  it("un día con marcaje real no se toca; un FERIADO solo lo pisa un permiso individual", () => {
+    const m = completa("FERIADO");
+    expect(requiereMarcado("VACACIONES", D("2026-06-15"), D("2026-06-19"), m)).toBe(true);
+    expect(requiereMarcado("FERIADO", D("2026-06-15"), D("2026-06-19"), m)).toBe(false);
+    const r = completa("VACACIONES");
+    r.set("2026-06-16", { entrada: new Date(), estadoEntrada: "FALTA" });
+    expect(requiereMarcado("VACACIONES", D("2026-06-15"), D("2026-06-19"), r)).toBe(false);
+  });
+});
+
 type Row = { id: number; empleadoId: number; fecha: Date; estadoEntrada: string; entrada: Date | null };
 
-function memoriaDb(seed: { asistencias?: Row[]; feriados?: string[]; vacaciones?: { id: number; empleadoId: number; inicio: Date; fin: Date }[]; reposos?: { id: number; empleadoId: number; inicio: Date; fin: Date }[] } = {}) {
+type Pase = { id: number; empleadoId: number; fecha: Date; tipo: string; motivo: string; autorizadorId: number | null; autorizado: boolean };
+
+function memoriaDb(seed: { asistencias?: Row[]; feriados?: string[]; vacaciones?: { id: number; empleadoId: number; inicio: Date; fin: Date }[]; reposos?: { id: number; empleadoId: number; inicio: Date; fin: Date }[]; pases?: Pase[] } = {}) {
   let seq = 100;
+  const pases = seed.pases ?? [];
   const asistencias: Row[] = (seed.asistencias ?? []).map((r, i) => ({ ...r, id: i + 1 }));
   const feriados = new Set(seed.feriados ?? []);
   const vacaciones = seed.vacaciones ?? [];
@@ -75,6 +107,18 @@ function memoriaDb(seed: { asistencias?: Row[]; feriados?: string[]; vacaciones?
         { id: 1, creadoEn: D("2020-01-01"), activo: true },
         { id: 2, creadoEn: D("2020-01-01"), activo: true },
       ],
+    },
+    _pases: pases,
+    pasePrevio: {
+      findFirst: async (a: { where: { empleadoId: number; fecha: Date; autorizado: boolean } }) => {
+        const w = a.where;
+        return pases.find(p => p.empleadoId === w.empleadoId && dayEq(p.fecha, w.fecha) && p.autorizado === w.autorizado) ?? null;
+      },
+      update: async (a: { where: { id: number }; data: Partial<Pase> }) => {
+        const p = pases.find(x => x.id === a.where.id)!;
+        Object.assign(p, a.data);
+        return p;
+      },
     },
   };
 }
@@ -150,11 +194,44 @@ describe('auto-marcado', () => {
           { id: 0, empleadoId: 1, fecha: D("2026-06-16"), estadoEntrada: "VACACIONES", entrada: null },
         ],
       });
-      const r = await revertRange(db as never, { empleadoId: 1, estado: "VACACIONES", inicio: D("2026-06-15"), fin: D("2026-06-16") });
+      // "hoy" = 16-jun: el 15 es feriado; el 16 aún no termina → se borra
+      const r = await revertRange(db as never, { empleadoId: 1, estado: "VACACIONES", inicio: D("2026-06-15"), fin: D("2026-06-16"), ahora: new Date("2026-06-16T15:00:00Z") });
       expect(r.revertidas).toBe(1);
       expect(r.borradas).toBe(1);
       expect(db._rows.find(x => x.fecha.toISOString().startsWith("2026-06-15"))!.estadoEntrada).toBe("FERIADO");
       expect(db._rows.some(x => x.fecha.toISOString().startsWith("2026-06-16"))).toBe(false);
+    });
+
+    it('anular sobre días ya transcurridos → FALTA (o falta justificada con pase); futuro → se borra', async () => {
+      const db = memoriaDb({
+        asistencias: [
+          { id: 0, empleadoId: 1, fecha: D("2026-06-15"), estadoEntrada: "REPOSO_MEDICO", entrada: null },
+          { id: 0, empleadoId: 1, fecha: D("2026-06-16"), estadoEntrada: "REPOSO_MEDICO", entrada: null },
+          { id: 0, empleadoId: 1, fecha: D("2026-06-18"), estadoEntrada: "REPOSO_MEDICO", entrada: null },
+        ],
+        pases: [{ id: 1, empleadoId: 1, fecha: D("2026-06-16"), tipo: "PASE_NORMAL", motivo: "Trámite", autorizadorId: 3, autorizado: false }],
+      });
+      // "hoy" = miércoles 17-jun (VE)
+      const r = await revertRange(db as never, { empleadoId: 1, estado: "REPOSO_MEDICO", inicio: D("2026-06-15"), fin: D("2026-06-18"), ahora: new Date("2026-06-17T15:00:00Z") });
+      expect(r).toEqual({ revertidas: 0, faltas: 2, borradas: 1 });
+      const dia = (s: string) => db._rows.find(x => x.fecha.toISOString().startsWith(s)) as (Row & { estadoOriginal?: string | null }) | undefined;
+      expect(dia("2026-06-15")!.estadoEntrada).toBe("FALTA");
+      expect(dia("2026-06-16")).toMatchObject({ estadoEntrada: "JUSTIFICADO", estadoOriginal: "FALTA" });
+      expect(dia("2026-06-18")).toBeUndefined();
+      expect(db._pases[0].autorizado).toBe(true);
+    });
+
+    it('reactivar (autoMarkRange) vuelve a convertir esas FALTAS en REPOSO_MEDICO', async () => {
+      const db = memoriaDb({
+        asistencias: [
+          { id: 0, empleadoId: 1, fecha: D("2026-06-15"), estadoEntrada: "REPOSO_MEDICO", entrada: null },
+        ],
+      });
+      await revertRange(db as never, { empleadoId: 1, estado: "REPOSO_MEDICO", inicio: D("2026-06-15"), fin: D("2026-06-15"), ahora: new Date("2026-06-17T15:00:00Z") });
+      expect(db._rows[0].estadoEntrada).toBe("FALTA");
+      const m = await autoMarkRange(db as never, { empleadoId: 1, estado: "REPOSO_MEDICO", inicio: D("2026-06-15"), fin: D("2026-06-15") });
+      expect(m.convertidas).toBe(1);
+      expect(db._rows[0].estadoEntrada).toBe("REPOSO_MEDICO");
     });
 
     it('no toca filas con marcaje', async () => {
@@ -229,6 +306,37 @@ describe('auto-marcado', () => {
       await expect(marcarFaltantes(db as never, { fecha: hoyStr })).rejects.toThrow(/pasados/);
       const manana = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
       await expect(marcarFaltantes(db as never, { fecha: manana })).rejects.toThrow(/pasados/);
+    });
+
+    it('pase o justificación anticipada pendiente → falta justificada y pase consumido', async () => {
+      const db = memoriaDb({
+        pases: [{ id: 1, empleadoId: 1, fecha: ayerHabil, tipo: "JUSTIFICACION_ANTICIPADA", motivo: "Cita médica", autorizadorId: 7, autorizado: false }],
+      });
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      expect(r.faltasJustificadas).toBe(1);
+      expect(r.faltas).toBe(1); // el empleado 2 no tenía pase
+      const fila = db._rows.find(x => x.empleadoId === 1) as Row & { estadoOriginal?: string; justificacionObs?: string };
+      expect(fila).toMatchObject({ estadoEntrada: "JUSTIFICADO", estadoOriginal: "FALTA", justificacionObs: "Justificación anticipada: Cita médica" });
+      expect(db._pases[0].autorizado).toBe(true);
+    });
+
+    it('vacación manda sobre un pase pendiente (no se consume)', async () => {
+      const db = memoriaDb({
+        vacaciones: [{ id: 1, empleadoId: 1, inicio: ayerHabil, fin: ayerHabil }],
+        pases: [{ id: 1, empleadoId: 1, fecha: ayerHabil, tipo: "PASE_NORMAL", motivo: "x", autorizadorId: null, autorizado: false }],
+      });
+      const r = await marcarFaltantes(db as never, { fecha: ayerHabil });
+      expect(r.vacaciones).toBe(1);
+      expect(db._pases[0].autorizado).toBe(false);
+    });
+
+    it('por defecto cierra "ayer" de Venezuela, también de noche (UTC ya es mañana)', async () => {
+      const db = memoriaDb();
+      // martes 2026-10-27 21:00 VE = miércoles 2026-10-28 01:00 UTC
+      const ahora = new Date("2026-10-28T01:00:00Z");
+      const r = await marcarFaltantes(db as never, { ahora });
+      expect(r.fecha).toBe("2026-10-26");
+      await expect(marcarFaltantes(db as never, { fecha: "2026-10-27", ahora })).rejects.toThrow(/pasados/);
     });
 
     it('fin de semana → nada (sin error)', async () => {

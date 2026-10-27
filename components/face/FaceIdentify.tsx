@@ -7,10 +7,10 @@ import {
   FACE_API_CONFIG,
   estimateHeadPose,
   generateFacePreview,
-  estimateBrightness
+  estimateLuminanceStats
 } from '@/lib/face-api';
 import { averageDescriptors } from '@/lib/descriptor-utils';
-import { FACE_QUALITY } from '@/lib/face-quality';
+import { FACE_QUALITY, evaluarIluminacion } from '@/lib/face-quality';
 import { api } from '@/lib/api';
 
 interface FaceQualityData {
@@ -31,6 +31,7 @@ interface LivenessQualityData {
   step: string;
   stepIndex: number;
   totalSteps: number;
+  steps?: string[]; // secuencia completa del desafío, para pintar el progreso
 }
 
 interface SeriesPoint {
@@ -69,6 +70,10 @@ interface FaceIdentifyProps {
   onError?: (msg: string) => void;
   onQualityChange?: (q: any) => void;
   onLivenessChange?: (q: LivenessQualityData) => void;
+  /** Notifica cada cambio de estado para que la pantalla muestre su propia instrucción. */
+  onStateChange?: (state: IdentifyState, message: string) => void;
+  /** Oculta la etiqueta de estado superpuesta al video (la pantalla la muestra aparte). */
+  hideStatus?: boolean;
 }
 
 const INFERENCE_INTERVAL_MS = 200; // Reducido de 1000 a 200 para lecturas más rápidas (5 fps)
@@ -88,11 +93,9 @@ const PROBE_SAMPLES = FACE_QUALITY.probe.samples;
 const PROBE_WINDOWS = FACE_QUALITY.probe.windows;
 const PROBE_TOTAL = PROBE_SAMPLES * PROBE_WINDOWS;
 const PROBE_MIN_SCORE = FACE_QUALITY.probe.minScore;
-const PROBE_MIN_BRIGHTNESS = FACE_QUALITY.probe.minBrightness;
-const PROBE_MAX_BRIGHTNESS = FACE_QUALITY.probe.maxBrightness;
 const PROBE_MAX_ANGLE = FACE_QUALITY.probe.maxAngle; // yaw/pitch frontal
 
-type IdentifyState =
+export type IdentifyState =
   | 'loading_models'
   | 'starting_camera'
   | 'scanning'
@@ -108,7 +111,7 @@ type IdentifyState =
 
 export function FaceIdentify({
   onMatch, onMultiFace, onUnknown, onCooldown, onRejected, onError,
-  onQualityChange, onLivenessChange
+  onQualityChange, onLivenessChange, onStateChange, hideStatus
 }: FaceIdentifyProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -272,6 +275,7 @@ export function FaceIdentify({
       step: step.step,
       stepIndex: idx,
       totalSteps: steps.length,
+      steps: steps.map(s => s.step),
     });
   };
 
@@ -327,13 +331,15 @@ export function FaceIdentify({
         const distanceHint = faceW < 120 ? 'Acérquese' : faceW > 300 ? 'Aléjese' : '';
         
         const pose = estimateHeadPose(landmarks);
-        const brightness = estimateBrightness(video, box);
-        const frontLight = Math.abs(pose.yaw) <= 35 && Math.abs(pose.pitch) <= 35 && brightness >= FACE_QUALITY.probe.minBrightness && brightness <= FACE_QUALITY.probe.maxBrightness;
+        const light = estimateLuminanceStats(video, box);
+        const brightness = light.mean;
+        const fallaLuz = evaluarIluminacion(light);
+        const frontLight = Math.abs(pose.yaw) <= 35 && Math.abs(pose.pitch) <= 35 && fallaLuz === null;
         let frontLightHint = '';
         if (Math.abs(pose.yaw) > 35) frontLightHint = 'Mire de frente';
         else if (Math.abs(pose.pitch) > 35) frontLightHint = 'Enderece la cabeza';
-        else if (brightness < FACE_QUALITY.probe.minBrightness) frontLightHint = 'Más luz frontal';
-        else if (brightness > FACE_QUALITY.probe.maxBrightness) frontLightHint = 'Menos luz directa';
+        else if (fallaLuz === 'POCA_LUZ') frontLightHint = 'Más luz frontal';
+        else if (fallaLuz === 'SOBREEXPUESTO') frontLightHint = 'Menos luz directa';
         
         onQualityChange?.({
           oneFace, oneFaceHint,
@@ -436,7 +442,7 @@ export function FaceIdentify({
           const frontal = Math.abs(pose.yaw) <= PROBE_MAX_ANGLE && Math.abs(pose.pitch) <= PROBE_MAX_ANGLE;
           const probeOk = oneFace && centered && distance && frontal
             && score >= PROBE_MIN_SCORE
-            && brightness >= PROBE_MIN_BRIGHTNESS && brightness <= PROBE_MAX_BRIGHTNESS;
+            && fallaLuz === null;
           if (!probeOk) {
             probeBufferRef.current = [];
             setMessage('Acerque el rostro con buena luz…');
@@ -464,6 +470,8 @@ export function FaceIdentify({
               earOk: true, // parpadeo ya no es requisito
               poseOk: move,
               brightness: Math.round(brightness),
+              clipHigh: Number(light.clipHigh.toFixed(3)),
+              clipLow: Number(light.clipLow.toFixed(3)),
               centered,
               distance,
             };
@@ -635,9 +643,12 @@ export function FaceIdentify({
                 }
               }, 2000);
             } else if (e.status === 403) {
-              const msg = e.data?.error
-                ? `${e.data.error} (rostro reconocido, solicite pase previo)`
-                : 'Fuera de horario — rostro reconocido, solicite pase previo';
+              // Reposo médico: el rechazo no se resuelve con un pase, no sugerirlo.
+              const msg = e.data?.tipo === 'reposo_medico'
+                ? e.data.error
+                : e.data?.error
+                  ? `${e.data.error} (rostro reconocido, solicite pase previo)`
+                  : 'Fuera de horario — rostro reconocido, solicite pase previo';
               setState('rejected');
               setMessage(msg);
               console.log('[Kiosco] fichaje rechazado por horario (rostro sí coincidió):', e?.data?.error ?? e?.message);
@@ -679,6 +690,11 @@ export function FaceIdentify({
   };
 
   useEffect(() => {
+    onStateChange?.(state, message);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, message]);
+
+  useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (watchdogRef.current) clearInterval(watchdogRef.current);
@@ -713,7 +729,7 @@ export function FaceIdentify({
         </div>
       )}
       
-      <div style={{
+      {!hideStatus && <div style={{
         position: 'absolute', top: 12, left: 12,
         padding: '8px 12px', borderRadius: 8,
         background: state === 'rejected' ? 'rgba(120,53,15,0.92)' : 'rgba(15,23,42,0.85)',
@@ -732,7 +748,7 @@ export function FaceIdentify({
         {state === 'rejected' && ` Rostro reconocido — ${message}`}
         {state === 'cooldown' && ' Espere para volver a marcar'}
         {state === 'error' && ' Error'}
-      </div>
+      </div>}
     </div>
   );
 }

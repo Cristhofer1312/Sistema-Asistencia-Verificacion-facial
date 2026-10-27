@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "models": "node scripts/copiar-modelos.mjs",
+    "predev": "node scripts/copiar-modelos.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copiar-modelos.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

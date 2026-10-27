@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { audit } from "@/lib/auditoria";
 import { marcarFaltantes } from "@/lib/auto-marcado";
+import { describirCierre } from "@/lib/cierre-automatico";
 import { z } from "zod";
 
 const cierreSchema = z.object({
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
     const res = await marcarFaltantes(prisma, { fecha: parsed.data.fecha });
     await audit(
       "FALTA_PROYECTADA",
-      `Cierre diario ${res.fecha}: ${res.faltas} falta(s), ${res.feriados} feriado(s), ${res.vacaciones} vacación(es), ${res.reposos} reposo(s), ${res.omitidos} omitido(s)`,
+      `Cierre diario ${res.fecha}: ${describirCierre(res)}`,
       { usuarioId: Number(sessionUser.id) }
     );
     return NextResponse.json({ ok: true, ...res });

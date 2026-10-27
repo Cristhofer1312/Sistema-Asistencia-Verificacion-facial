@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { api } from "@/lib/api";
-import { type Empleado, nombreCompleto, getHoyVE } from "@/lib/types";
+import { type Empleado, nombreCompleto, getHoyVE, getGerenciaName } from "@/lib/types";
 import { Select } from "@/components/ui/Select";
 import { formatFriendlyDate } from "@/lib/date-utils";
+import { RangoFechas, AccionesReporte, EncabezadoImpresion, useOrden } from "@/components/ui/Reporte";
+import { descargarCSV, nombreArchivo } from "@/lib/export";
 
 type Reposo = {
   id: number;
@@ -17,7 +19,7 @@ type Reposo = {
   anulada: boolean;
   motivoAnulacion: string | null;
   anuladoEn: string | null;
-  empleado: { nombre: string; apellido: string; cedula: string };
+  empleado: { nombre: string; apellido: string; cedula: string; gerencia?: string | { nombre: string } };
 };
 
 type Filtros = { q: string; gerenciaId: string; desde: string; hasta: string; estado: string; situacion: string };
@@ -34,6 +36,8 @@ export default function Reposos() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [accionMsg, setAccionMsg] = useState<{ tipo: "info" | "warn"; texto: string } | null>(null);
+  const [reactivandoId, setReactivandoId] = useState<number | null>(null);
   const [filtros, setFiltros] = useState<Filtros>(FILTROS_INICIALES);
   const [anular, setAnular] = useState<{ id: number | null; motivo: string; error: string | null; procesando: boolean }>({ id: null, motivo: "", error: null, procesando: false });
   const [formData, setFormData] = useState({ empleadoId: "", inicio: "", fin: "", motivo: "", documento: "" });
@@ -134,35 +138,83 @@ export default function Reposos() {
     }
     setAnular(a => ({ ...a, procesando: true, error: null }));
     try {
-      await api.reposos.anular(anular.id, anular.motivo.trim());
+      const res = await api.reposos.anular(anular.id, anular.motivo.trim());
       setAnular({ id: null, motivo: "", error: null, procesando: false });
+      setAccionMsg({ tipo: "info", texto: `Reposo anulado: ${res.faltas ?? 0} día(s) ya transcurrido(s) quedaron como FALTA.` });
       await cargar(filtros);
     } catch (e: any) {
       setAnular(a => ({ ...a, procesando: false, error: e.data?.error || e.message || "Error anulando" }));
     }
   }
 
-  if (loading) {
-    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "400px" }}>Cargando…</div>;
+  async function handleReactivar(id: number) {
+    if (!confirm("¿Reactivar este reposo? Los días del rango volverán a figurar como REPOSO MÉDICO (las faltas que dejó la anulación se convierten).")) return;
+    setReactivandoId(id);
+    setAccionMsg(null);
+    try {
+      const res = await api.reposos.reactivar(id);
+      setAccionMsg({ tipo: "info", texto: `Reposo reactivado: ${res.convertidas} falta(s) volvieron a REPOSO MÉDICO, ${res.creadas} día(s) marcado(s).` });
+      await cargar(filtros);
+    } catch (e: any) {
+      setAccionMsg({ tipo: "warn", texto: e.data?.error || e.message || "Error reactivando" });
+    } finally {
+      setReactivandoId(null);
+    }
   }
 
   const estadoDe = (r: Reposo) =>
     r.anulada
-      ? { label: "ANULADA", cls: "badge b-inactive" }
-      : r.fin < hoy
-        ? { label: "FINALIZADO", cls: "badge" }
-        : r.inicio > hoy
+      ? { label: "ANULADO", cls: "badge b-inactive" }
+      : r.fin.slice(0, 10) < hoy
+        ? { label: "FINALIZADO", cls: "badge b-inactive" }
+        : r.inicio.slice(0, 10) > hoy
           ? { label: "PROGRAMADO", cls: "badge b-just" }
-          : { label: "VIGENTE", cls: "badge b-rep" };
+          : { label: "EN CURSO", cls: "badge b-rep" };
+
+  const orden = useOrden(reposos, {
+    empleado: r => `${r.empleado.apellido} ${r.empleado.nombre}`,
+    gerencia: r => getGerenciaName(r.empleado.gerencia),
+    inicio: r => r.inicio.slice(0, 10),
+    dias: r => diasEntre(r.inicio, r.fin),
+    situacion: r => estadoDe(r).label,
+  }, { clave: "inicio", dir: "desc" });
+  const totalDias = reposos.filter(r => !r.anulada).reduce((a, r) => a + diasEntre(r.inicio, r.fin), 0);
+
+  function exportar() {
+    descargarCSV(nombreArchivo("reposos_medicos", filtros.desde, filtros.hasta), [
+      { titulo: "Cédula", valor: (r: Reposo) => r.empleado.cedula },
+      { titulo: "Apellido", valor: (r: Reposo) => r.empleado.apellido },
+      { titulo: "Nombre", valor: (r: Reposo) => r.empleado.nombre },
+      { titulo: "Gerencia", valor: (r: Reposo) => getGerenciaName(r.empleado.gerencia) },
+      { titulo: "Inicio", valor: (r: Reposo) => r.inicio.slice(0, 10) },
+      { titulo: "Fin", valor: (r: Reposo) => r.fin.slice(0, 10) },
+      { titulo: "Días calendario", valor: (r: Reposo) => diasEntre(r.inicio, r.fin) },
+      { titulo: "Motivo / diagnóstico", valor: (r: Reposo) => r.motivo },
+      { titulo: "Documento", valor: (r: Reposo) => r.documento },
+      { titulo: "Situación", valor: (r: Reposo) => estadoDe(r).label },
+      { titulo: "Motivo de anulación", valor: (r: Reposo) => r.motivoAnulacion },
+    ], orden.ordenadas);
+  }
+
+  if (loading) {
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "400px" }}>Cargando…</div>;
+  }
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ marginBottom: 4 }}>Reposos médicos</h2>
-        <p className="muted">Asignación por empleado · rango inicio/fin · sin solapamiento</p>
+      <EncabezadoImpresion
+        titulo="Reposos médicos"
+        detalle={[filtros.desde || filtros.hasta ? `Período ${filtros.desde || "inicio"} a ${filtros.hasta || "—"}` : "Todos los períodos", filtros.q && `Búsqueda: "${filtros.q}"`].filter(Boolean).join(" · ")}
+      />
+      <div className="page-head">
+        <div>
+          <h2>Reposos médicos</h2>
+          <p className="page-sub">Asignación por empleado · rango inicio/fin · sin solapamiento</p>
+        </div>
+        <AccionesReporte onExportar={exportar} deshabilitado={reposos.length === 0} />
       </div>
 
-      <div className="card">
+      <div className="card no-print">
         <h3 style={{ marginBottom: 18 }}> Registrar reposo médico</h3>
         {error && <div className="alert alert-warn" style={{ marginBottom: 16 }}><span></span><span>{error}</span></div>}
         {aviso && <div className="alert alert-info" style={{ marginBottom: 16 }}><span></span><span>{aviso}</span></div>}
@@ -170,7 +222,7 @@ export default function Reposos() {
           <div className="grid2" style={{ gap: 18 }}>
             <div className="form-group">
               <label htmlFor="rep-emp">Empleado <span style={{ color: "var(--bad)" }}>*</span></label>
-              <Select id="rep-emp" value={formData.empleadoId} onChange={(e) => setFormData({ ...formData, empleadoId: e.target.value })} required>
+              <Select id="rep-emp" value={formData.empleadoId} onChange={(e) => setFormData({ ...formData, empleadoId: e.target.value })} required searchable searchPlaceholder="Buscar por nombre o cédula…">
                 <option value="">Seleccione empleado</option>
                 {empleados.map((emp) => (
                   <option key={emp.id} value={emp.id}>{nombreCompleto(emp)} ({emp.cedula})</option>
@@ -212,8 +264,8 @@ export default function Reposos() {
       </div>
 
       {/* Filtros */}
-      <div className="card" style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 14 }}> Buscar reposos otorgados</h3>
+      <div className="card no-print" style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 14 }}>Buscar reposos otorgados</h3>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div className="form-group" style={{ flex: "2 1 220px" }}>
             <label htmlFor="rep-f-q">Empleado o motivo</label>
@@ -234,14 +286,7 @@ export default function Reposos() {
               ))}
             </Select>
           </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="rep-f-desde">Desde</label>
-            <input id="rep-f-desde" type="date" value={filtros.desde} onChange={e => setFiltros({ ...filtros, desde: e.target.value })} />
-          </div>
-          <div className="form-group" style={{ flex: "1 1 140px" }}>
-            <label htmlFor="rep-f-hasta">Hasta</label>
-            <input id="rep-f-hasta" type="date" value={filtros.hasta} onChange={e => setFiltros({ ...filtros, hasta: e.target.value })} />
-          </div>
+          <RangoFechas idPrefix="rep-f" permitirTodo desde={filtros.desde} hasta={filtros.hasta} onChange={r => setFiltros({ ...filtros, ...r })} />
           <div className="form-group" style={{ flex: "1 1 140px" }}>
             <label htmlFor="rep-f-est">Estado</label>
             <Select id="rep-f-est" value={filtros.estado} onChange={e => setFiltros({ ...filtros, estado: e.target.value })}>
@@ -270,41 +315,50 @@ export default function Reposos() {
       <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3>Reposos registrados</h3>
-          <span className="chip">{reposos.length} reposos</span>
+          <span className="chip">{reposos.length} reposo(s) · {totalDias} día(s) vigentes</span>
         </div>
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table>
+        {accionMsg && (
+          <div className={`alert alert-${accionMsg.tipo} no-print`} style={{ margin: "12px 20px" }}><span></span><span>{accionMsg.texto}</span></div>
+        )}
+        <div className="table-wrap tabla-sticky" style={{ border: "none", maxHeight: "70vh" }}>
+          <table className="tabla-reporte">
             <thead>
               <tr>
-                <th>Empleado</th>
-                <th>Período</th>
+                <orden.Th k="empleado">Empleado</orden.Th>
+                <orden.Th k="gerencia">Gerencia</orden.Th>
+                <orden.Th k="inicio">Período</orden.Th>
+                <orden.Th k="dias" num>Días</orden.Th>
+                <orden.Th k="situacion">Situación</orden.Th>
                 <th>Motivo</th>
                 <th>Documento</th>
-                <th>Acción</th>
+                <th className="no-print">Acción</th>
               </tr>
             </thead>
             <tbody>
               {reposos.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: "center", padding: "32px" }}>
-                    <p className="muted">No hay reposos médicos registrados</p>
+                  <td colSpan={8} style={{ textAlign: "center", padding: "32px" }}>
+                    <p className="muted">No hay reposos médicos con estos filtros</p>
                   </td>
                 </tr>
               ) : (
-                reposos.map((r) => {
+                orden.ordenadas.map((r) => {
                   const est = estadoDe(r);
                   return (
                     <tr key={r.id} style={{ opacity: r.anulada ? 0.65 : 1 }}>
                       <td>
-                        <div style={{ fontWeight: 600 }}>{nombreCompleto(r.empleado)}</div>
+                        <a href={`/admin/empleados/${r.empleado.cedula}`} style={{ fontWeight: 600 }}>{nombreCompleto(r.empleado)}</a>
                         <div className="muted mono" style={{ fontSize: ".75rem" }}>{r.empleado.cedula}</div>
                       </td>
-                      <td className="mono" style={{ fontWeight: 600 }}>
+                      <td style={{ fontSize: ".8125rem" }}>{getGerenciaName(r.empleado.gerencia)}</td>
+                      <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
                         {formatFriendlyDate(r.inicio)} → {formatFriendlyDate(r.fin)}
-                        <div className="muted" style={{ fontSize: ".72rem", fontWeight: 400 }}>{diasEntre(r.inicio, r.fin)} día(s)</div>
-                        <div className={est.cls} style={{ display: "inline-flex", marginTop: 4, fontSize: ".65rem" }}>{est.label}</div>
+                      </td>
+                      <td className="num">{diasEntre(r.inicio, r.fin)}</td>
+                      <td>
+                        <span className={est.cls}>{est.label}</span>
                         {r.anulada && r.motivoAnulacion && (
-                          <div className="muted" style={{ fontSize: ".72rem", fontWeight: 400, marginTop: 4, maxWidth: 220 }}>
+                          <div className="muted" style={{ fontSize: ".72rem", marginTop: 4, maxWidth: 220 }}>
                             Motivo: {r.motivoAnulacion}
                           </div>
                         )}
@@ -317,7 +371,7 @@ export default function Reposos() {
                             : r.documento
                           : "—"}
                       </td>
-                      <td>
+                      <td className="no-print">
                         {!r.anulada && (
                           <button
                             className="btn btn-sm btn-danger"
@@ -325,6 +379,15 @@ export default function Reposos() {
                             onClick={() => abrirAnular(r.id)}
                           >
                             Anular
+                          </button>
+                        )}
+                        {r.anulada && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={reactivandoId === r.id}
+                            onClick={() => handleReactivar(r.id)}
+                          >
+                            {reactivandoId === r.id ? "Reactivando…" : "Reactivar"}
                           </button>
                         )}
                       </td>

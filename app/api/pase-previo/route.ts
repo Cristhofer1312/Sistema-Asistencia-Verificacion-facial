@@ -58,7 +58,7 @@ export async function GET(req: Request) {
     where,
     include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
     orderBy: { fecha: 'desc' },
-    take: 100,
+    take: 5000, // antes 100: la vista del día y la de pendientes perdían pases
   });
 
   return NextResponse.json(pases);
@@ -105,11 +105,15 @@ export async function POST(req: Request) {
     }
   }
 
-  // Verificar que no exista ya un pase pendiente para ese empleado/fecha/tipo
+  // Un solo pase por empleado/fecha/tipo (@@unique), esté pendiente o ya usado:
+  // buscar solo los pendientes dejaba pasar el duplicado y el create fallaba con 500.
   const existing = await prisma.pasePrevio.findFirst({
-    where: { empleadoId, fecha: new Date(fecha), tipo, autorizado: false },
+    where: { empleadoId, fecha: new Date(fecha), tipo },
   });
 
+  if (existing?.autorizado) {
+    return NextResponse.json({ error: "Ya se usó un pase de este tipo para ese empleado y fecha" }, { status: 400 });
+  }
   if (existing) {
     const msg = tipo === "JUSTIFICACION_ANTICIPADA" 
       ? "Ya existe una justificación anticipada para ese empleado y fecha" 
@@ -183,7 +187,14 @@ export async function POST(req: Request) {
       autorizadorId: Number(sessionUser.id),
     },
     include: { empleado: { select: EMPLEADO_PUBLIC_SELECT } },
+  }).catch((e: unknown) => {
+    // Dos solicitudes simultáneas: el @@unique decide, se responde como duplicado.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return null;
+    throw e;
   });
+  if (!pase) {
+    return NextResponse.json({ error: "Ya existe un pase de este tipo para ese empleado y fecha" }, { status: 400 });
+  }
 
   const accionAuditoria = tipo === "JUSTIFICACION_ANTICIPADA" ? "CREAR_JUSTIFICACION_ANTICIPADA" : "CREAR_PASE";
   const msgAuditoria = tipo === "JUSTIFICACION_ANTICIPADA" 

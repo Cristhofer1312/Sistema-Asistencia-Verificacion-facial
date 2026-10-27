@@ -71,9 +71,10 @@ export interface Asistencia {
   justificacionDoc: string | null;
   justificacionObs: string | null;
   autorizadorId: number | null;
+  autorizador?: string | null; // username, resuelto por GET /api/asistencias
   creadoEn: string;
   actualizadoEn: string;
-  empleado: Pick<Empleado, 'nombre' | 'apellido' | 'cedula' | 'gerencia' | 'cargo' | 'gerenciaId'>;
+  empleado: Pick<Empleado, 'nombre' | 'apellido' | 'cedula' | 'gerencia' | 'cargo' | 'gerenciaId'> & { activo?: boolean };
 }
 
 export interface Feriado {

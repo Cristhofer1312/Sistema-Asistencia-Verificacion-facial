@@ -67,7 +67,7 @@ export async function POST(req: Request) {
 
   await audit(
     "ANULAR_REPOSO",
-    `Reposo anulado: ${reposo.empleado.cedula} ${reposo.inicio.toISOString().slice(0, 10)} → ${reposo.fin.toISOString().slice(0, 10)} · Motivo: ${motivoAnulacion} (${rev.revertidas} revertida(s), ${rev.borradas} borrada(s))`,
+    `Reposo anulado: ${reposo.empleado.cedula} ${reposo.inicio.toISOString().slice(0, 10)} → ${reposo.fin.toISOString().slice(0, 10)} · Motivo: ${motivoAnulacion} (${rev.faltas} día(s) pasado(s) → falta, ${rev.revertidas} revertida(s), ${rev.borradas} futura(s) borrada(s))`,
     { usuarioId: Number(sessionUser.id) }
   );
 

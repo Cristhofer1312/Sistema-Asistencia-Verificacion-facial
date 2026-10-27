@@ -56,6 +56,32 @@ export async function loadFaceApiModels(): Promise<void> {
   modelsLoaded = true;
 }
 
+export interface InfoAceleracion {
+  backend: string; // backend de tf en uso: 'webgl' o 'cpu'
+  renderer: string; // tarjeta de video que reporta el navegador
+  gpu: boolean; // false = todo corre en el procesador (varias veces más lento)
+}
+
+// Renderers que emulan WebGL en la CPU: Chrome los usa con la aceleración por
+// hardware desactivada o un driver no soportado, y tf no se entera.
+const RENDER_POR_SOFTWARE = /swiftshader|llvmpipe|software|basic render/i;
+
+/** Indica si el reconocimiento corre de verdad en la GPU. Llamar después de loadFaceApiModels. */
+export function infoAceleracion(): InfoAceleracion {
+  const backend = (faceapi.tf as unknown as { getBackend(): string }).getBackend();
+  let renderer = '';
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (gl) {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      renderer = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    }
+  } catch {
+    // sin WebGL: renderer vacío
+  }
+  return { backend, renderer, gpu: backend === 'webgl' && !RENDER_POR_SOFTWARE.test(renderer) };
+}
+
 /**
  * Verifica si los modelos están cargados
  */

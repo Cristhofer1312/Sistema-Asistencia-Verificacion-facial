@@ -7,12 +7,14 @@ import {
   FACE_API_CONFIG,
   estimateHeadPose,
   generateFacePreview,
-  estimateLuminanceStats
+  estimateLuminanceStats,
+  infoAceleracion,
+  type InfoAceleracion
 } from '@/lib/face-api';
 import { averageDescriptors } from '@/lib/descriptor-utils';
 import { FACE_QUALITY, evaluarIluminacion } from '@/lib/face-quality';
 import { cargarDetectorPantallas, detectarDispositivos } from '@/lib/anti-pantalla';
-import { ANTI_PANTALLA, dispositivoSobreRostro, etiquetaDispositivo, type DispositivoDetectado } from '@/lib/anti-pantalla-reglas';
+import { dispositivoSobreRostro, etiquetaDispositivo, type DispositivoDetectado } from '@/lib/anti-pantalla-reglas';
 import { api } from '@/lib/api';
 
 interface FaceQualityData {
@@ -76,9 +78,22 @@ interface FaceIdentifyProps {
   onStateChange?: (state: IdentifyState, message: string) => void;
   /** Oculta la etiqueta de estado superpuesta al video (la pantalla la muestra aparte). */
   hideStatus?: boolean;
+  /** Informa si el reconocimiento corre en la GPU (false = lento, revisar chrome://gpu). */
+  onAceleracion?: (info: InfoAceleracion) => void;
 }
 
-const INFERENCE_INTERVAL_MS = 200; // Reducido de 1000 a 200 para lecturas más rápidas (5 fps)
+// Bucle secuencial: un análisis a la vez, el siguiente arranca cuando termina el
+// anterior (con setInterval se encimaban si un cuadro tardaba más del intervalo).
+// CICLO_MIN_MS limita a ~15 cuadros/s para no repetir cuadros de la cámara.
+const CICLO_MIN_MS = 66;
+const PAUSA_MIN_MS = 10;
+// Un cuadro malo ya no borra las muestras tomadas: solo se reinicia la toma si
+// pasa este tiempo sin una muestra buena (la persona se fue o se movió mucho).
+const PROBE_MAX_HUECO_MS = 1500;
+// Tras un registro exitoso el escaneo se reanuda en este tiempo (el aviso sigue visible).
+const LIBERAR_TRAS_EXITO_MS = 1000;
+// Un reto pedido por adelantado se usa solo si le queda al menos este margen (TTL 90 s).
+const CHALLENGE_MARGEN_MS = 20000;
 // Umbrales suaves: giro leve (±10°) para facilidad de escaneo.
 // FRENTE usa ±14° (ver abajo). La seguridad la da la secuencia ordenada.
 const YAW_THRESHOLD = 10;
@@ -113,7 +128,7 @@ export type IdentifyState =
 
 export function FaceIdentify({
   onMatch, onMultiFace, onUnknown, onCooldown, onRejected, onError,
-  onQualityChange, onLivenessChange, onStateChange, hideStatus
+  onQualityChange, onLivenessChange, onStateChange, hideStatus, onAceleracion
 }: FaceIdentifyProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -124,7 +139,8 @@ export function FaceIdentify({
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   
   const streamRef = useRef<MediaStream | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const loopActivoRef = useRef(false);
   const watchdogRef = useRef<NodeJS.Timeout | null>(null);
   const stateRef = useRef<IdentifyState>('loading_models');
   const matchingRef = useRef(false);
@@ -138,13 +154,25 @@ export function FaceIdentify({
   const lastPoseRef = useRef<{ yaw: number; pitch: number } | null>(null);
   const probeBufferRef = useRef<Float32Array[]>([]);
   // Anti-pantalla del intento en curso: revisiones hechas y dispositivo hallado sobre el rostro.
-  const pantallaRef = useRef<{ revisiones: number; ultimoMs: number; detectado: DispositivoDetectado | null }>(
-    { revisiones: 0, ultimoMs: 0, detectado: null }
+  const pantallaRef = useRef<{ revisiones: number; detectado: DispositivoDetectado | null }>(
+    { revisiones: 0, detectado: null }
   );
+  const ultimaMuestraMsRef = useRef(0);
+  // Reto pedido por adelantado (al aparecer un rostro) para no esperar la red al empezar.
+  const challengeListoRef = useRef<{ challengeId: string; steps: string[]; expira: number } | null>(null);
+  const pidiendoChallengeRef = useRef(false);
+  // Marcas de tiempo del intento, para medir en la consola cuánto tarda cada etapa.
+  const tiemposRef = useRef({ inicio: 0, muestras: 0, envio: 0 });
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // Actualiza el ref en el acto: el bucle lee stateRef y no debe esperar al re-render.
+  const setEstado = (s: IdentifyState) => {
+    stateRef.current = s;
+    setState(s);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -152,13 +180,16 @@ export function FaceIdentify({
       try {
         // Falla cerrado: sin detector de celulares/pantallas el kiosco no ficha.
         await Promise.all([loadFaceApiModels(), cargarDetectorPantallas()]);
+        const aceleracion = infoAceleracion();
+        console.log(`[Kiosco] aceleración: backend=${aceleracion.backend} gpu=${aceleracion.gpu} (${aceleracion.renderer || 'sin WebGL'})`);
+        onAceleracion?.(aceleracion);
         if (mounted) {
-          setState('starting_camera');
+          setEstado('starting_camera');
           startCamera();
         }
       } catch (e) {
         if (mounted) {
-          setState('error');
+          setEstado('error');
           onError?.('Error cargando modelos IA: ' + (e as Error).message);
         }
       }
@@ -174,14 +205,31 @@ export function FaceIdentify({
       });
       if (videoRef.current) videoRef.current.srcObject = stream;
       streamRef.current = stream;
-      setState('scanning');
+      setEstado('scanning');
       setMessage('Escaneando… presente su rostro');
       markProgress();
       startInferenceLoop();
       startWatchdog();
     } catch {
       onError?.('No se pudo acceder a la cámara');
-      setState('error');
+      setEstado('error');
+    }
+  };
+
+  // Pide un reto por adelantado si no hay uno vigente. Se llama al aparecer un
+  // rostro (no en reposo, para no llenar la tabla de retos sin uso). Un fallo
+  // aquí no es error: requestChallenge lo pedirá en el momento.
+  const prepararChallenge = async () => {
+    const listo = challengeListoRef.current;
+    if (pidiendoChallengeRef.current || (listo && listo.expira - Date.now() > CHALLENGE_MARGEN_MS)) return;
+    pidiendoChallengeRef.current = true;
+    try {
+      const r = await api.kiosco.challenge();
+      challengeListoRef.current = { challengeId: r.challengeId, steps: r.steps, expira: new Date(r.expiresAt).getTime() };
+    } catch (e: any) {
+      console.log('[Kiosco] no se pudo preparar el challenge:', e?.data?.error ?? e?.message);
+    } finally {
+      pidiendoChallengeRef.current = false;
     }
   };
 
@@ -189,13 +237,20 @@ export function FaceIdentify({
     markProgress();
     const myAttempt = attemptIdRef.current;
     try {
-      console.log('[Kiosco] solicitando challenge al servidor…');
-      const result = await api.kiosco.challenge();
+      const listo = challengeListoRef.current;
+      challengeListoRef.current = null; // un reto se usa una sola vez
+      let result: { challengeId: string; steps: string[] };
+      if (listo && listo.expira - Date.now() > CHALLENGE_MARGEN_MS) {
+        result = listo;
+      } else {
+        console.log('[Kiosco] solicitando challenge al servidor…');
+        result = await api.kiosco.challenge();
+      }
       if (attemptIdRef.current !== myAttempt) {
         console.log('[Kiosco] challenge descartado (reinicio por watchdog)');
         return;
       }
-      console.log('[Kiosco] challenge recibido:', result.steps.join(' → '));
+      console.log('[Kiosco] challenge:', result.steps.join(' → '), listo === result ? '(preparado)' : '');
       markProgress();
       challengeIdRef.current = result.challengeId;
       challengeStepsRef.current = result.steps.map(s => ({ step: s, completed: false }));
@@ -204,12 +259,12 @@ export function FaceIdentify({
       setCurrentStepIndex(0);
       seriesRef.current = [];
       challengeStartTimeRef.current = Date.now();
-      setState('challenge_active');
+      setEstado('challenge_active');
       updateChallengeUI();
     } catch (e: any) {
       console.log('[Kiosco] error solicitando challenge:', e?.data?.error ?? e?.message);
       onError?.('Error solicitando challenge: ' + (e.data?.error ?? e.message));
-      setState('error');
+      setEstado('error');
     }
   };
 
@@ -223,7 +278,7 @@ export function FaceIdentify({
     challengeStartTimeRef.current = 0;
     lastPoseRef.current = null; // Reiniciar referencia de pose para que no sume deltas falsos
     probeBufferRef.current = []; // Descartar muestras del intento anterior
-    pantallaRef.current = { revisiones: 0, ultimoMs: 0, detectado: null };
+    pantallaRef.current = { revisiones: 0, detectado: null };
   };
 
   // 403 fuera_de_margen: el rostro SÍ coincidió, el fichaje fue bloqueado por
@@ -246,7 +301,7 @@ export function FaceIdentify({
     attemptIdRef.current += 1;
     matchingRef.current = false;
     resetChallenge();
-    setState('scanning');
+    setEstado('scanning');
     setMessage('Escaneando… presente su rostro');
     markProgress();
     console.log('[Kiosco] watchdog: 10s sin progreso, escaneo reiniciado');
@@ -287,461 +342,496 @@ export function FaceIdentify({
     });
   };
 
+  // Consola: cuánto tardó cada etapa del intento (para medir en el kiosco real).
+  const registrarTiempos = () => {
+    const t = tiemposRef.current;
+    if (!t.inicio) return;
+    const ahora = performance.now();
+    const ms = (a: number, b: number) => (a && b ? `${Math.round(b - a)}ms` : '—');
+    console.log(`[Kiosco] tiempos: reto ${ms(t.inicio, t.muestras)} · muestras ${ms(t.muestras, t.envio)} · servidor ${ms(t.envio, ahora)} · total ${ms(t.inicio, ahora)}`);
+    tiemposRef.current = { inicio: 0, muestras: 0, envio: 0 };
+  };
+
   const startInferenceLoop = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    
-    intervalRef.current = setInterval(async () => {
-      // 'matching' sigue corriendo: el envío al servidor ocurre en el tick
-      // siguiente a completar el challenge (el state de React se sincroniza
-      // al ref vía efecto después del re-render).
-      if (stateRef.current !== 'scanning' && stateRef.current !== 'challenge_active' && stateRef.current !== 'matching') return;
+    if (loopActivoRef.current) return;
+    loopActivoRef.current = true;
+    const ciclo = async () => {
+      if (!loopActivoRef.current) return;
+      const inicio = performance.now();
+      await analizarCuadro();
+      if (!loopActivoRef.current) return;
+      const espera = Math.max(PAUSA_MIN_MS, CICLO_MIN_MS - (performance.now() - inicio));
+      timerRef.current = setTimeout(ciclo, espera);
+    };
+    ciclo();
+  };
 
-      const videoEl = videoRef.current;
-      if (!videoEl || videoEl.readyState !== videoEl.HAVE_ENOUGH_DATA) return;
+  // Un cuadro de la cámara. Los estados se leen de stateRef (setEstado lo
+  // actualiza en el acto), así el cuadro siguiente ya ve el estado nuevo.
+  const analizarCuadro = async () => {
+    if (stateRef.current !== 'scanning' && stateRef.current !== 'challenge_active' && stateRef.current !== 'matching') return;
 
-      try {
-        const detections = await faceapi
-          .detectAllFaces(videoEl, FACE_API_CONFIG.tinyFaceDetectorOptions)
-          .withFaceLandmarks()
-          .withFaceDescriptors();
+    const videoEl = videoRef.current;
+    if (!videoEl || videoEl.readyState !== videoEl.HAVE_ENOUGH_DATA) return;
 
-        if (detections.length === 0) return;
+    try {
+      // La "huella" (descriptor) solo se necesita al tomar muestras: calcularla
+      // en cada cuadro costaba ~30% del análisis sin usarse.
+      const consulta = faceapi
+        .detectAllFaces(videoEl, FACE_API_CONFIG.tinyFaceDetectorOptions)
+        .withFaceLandmarks();
+      const detections: any[] = stateRef.current === 'matching'
+        ? await consulta.withFaceDescriptors()
+        : await consulta;
 
-        if (detections.length > 1) {
-          setState('multi_face');
-          setMessage('Múltiples rostros detectados. Preséntese solo.');
-          onMultiFace();
-          setTimeout(() => {
-            if (stateRef.current === 'multi_face') {
-              setState('scanning');
-              setMessage('Escaneando… presente su rostro');
-            }
-          }, 2000);
+      if (detections.length === 0) return;
+
+      if (detections.length > 1) {
+        setEstado('multi_face');
+        setMessage('Múltiples rostros detectados. Preséntese solo.');
+        onMultiFace();
+        setTimeout(() => {
+          if (stateRef.current === 'multi_face') {
+            setEstado('scanning');
+            setMessage('Escaneando… presente su rostro');
+          }
+        }, 2000);
+        return;
+      }
+
+      const det = detections[0] as any;
+      const detection = det.detection;
+      const landmarks = det.landmarks;
+      const video = videoEl;
+      const box = detection.box;
+        
+      const oneFace = detections.length === 1;
+      const oneFaceHint = oneFace ? '' : detections.length === 0 ? 'No se detecta rostro' : 'Solo una persona';
+        
+      const videoW = video.videoWidth;
+      const boxCenterX = box.x + box.width / 2;
+      const centered = Math.abs(boxCenterX - videoW / 2) < videoW * 0.15;
+      const centeredHint = centered ? '' : boxCenterX < videoW / 2 ? 'Muévase a la derecha' : 'Muévase a la izquierda';
+        
+      const faceW = box.width;
+      const distance = faceW >= 120 && faceW <= 300;
+      const distanceHint = faceW < 120 ? 'Acérquese' : faceW > 300 ? 'Aléjese' : '';
+        
+      const pose = estimateHeadPose(landmarks);
+      const light = estimateLuminanceStats(video, box);
+      const brightness = light.mean;
+      const fallaLuz = evaluarIluminacion(light);
+      const frontLight = Math.abs(pose.yaw) <= 35 && Math.abs(pose.pitch) <= 35 && fallaLuz === null;
+      let frontLightHint = '';
+      if (Math.abs(pose.yaw) > 35) frontLightHint = 'Mire de frente';
+      else if (Math.abs(pose.pitch) > 35) frontLightHint = 'Enderece la cabeza';
+      else if (fallaLuz === 'POCA_LUZ') frontLightHint = 'Más luz frontal';
+      else if (fallaLuz === 'SOBREEXPUESTO') frontLightHint = 'Menos luz directa';
+        
+      onQualityChange?.({
+        oneFace, oneFaceHint,
+        centered, centeredHint,
+        distance, distanceHint,
+        frontLight, frontLightHint,
+        allOk: oneFace && centered && distance && frontLight,
+      });
+        
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const displaySize = { width: video.videoWidth, height: video.videoHeight };
+          faceapi.matchDimensions(canvas, displaySize);
+          const resized = faceapi.resizeResults(det, displaySize) as any;
+            
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+          const allOk = oneFace && centered && distance && frontLight;
+          const boxColor = allOk ? '#10b981' : '#ef4444';
+            
+          const resizedDet = resized.detection;
+          ctx.strokeStyle = boxColor;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.rect(resizedDet.box.x, resizedDet.box.y, resizedDet.box.width, resizedDet.box.height);
+          ctx.stroke();
+        }
+      }
+        
+      // Liveness: frame-to-frame movement (delta > 3 grados)
+      let move = false;
+      if (lastPoseRef.current) {
+        const dy = pose.yaw - lastPoseRef.current.yaw;
+        const dp = pose.pitch - lastPoseRef.current.pitch;
+        if (Math.abs(dy) > 3 || Math.abs(dp) > 3) {
+          move = true;
+        }
+      }
+      lastPoseRef.current = { yaw: pose.yaw, pitch: pose.pitch };
+        
+      // Registrar serie para challenge
+      if (stateRef.current === 'challenge_active') {
+        const now = Date.now();
+        seriesRef.current.push({ yaw: pose.yaw, pitch: pose.pitch, t: now - challengeStartTimeRef.current });
+      }
+
+      // Máquina de estados.
+      // NOTA: usa refs (no el state de React): el bucle se crea una vez
+      // y el state llega obsoleto al closure. El match se dispara con llamada
+      // directa (doMatch) en el mismo tick, nunca esperando al próximo.
+      // Escaneo: arranca en cuanto el rostro está bien ubicado. Ya no se exige
+      // mover la cabeza: el reto es solo FRENTE y la protección contra fotos y
+      // videos la da el detector de celulares/pantallas.
+      if (stateRef.current === 'scanning') {
+        if (oneFace && centered && distance && frontLight) {
+          tiemposRef.current = { inicio: performance.now(), muestras: 0, envio: 0 };
+          setEstado('challenge_requested');
+          setMessage('Verificando…');
+          await requestChallenge();
+        } else {
+          void prepararChallenge(); // la persona se está acomodando: tener el reto listo
+        }
+        return;
+      }
+
+      if (stateRef.current === 'challenge_active') {
+        const steps = challengeStepsRef.current;
+        if (steps.length === 0) return; // challenge aún no cargado, seguir acumulando serie
+        const idx = currentStepIdxRef.current;
+        const step = steps[idx];
+        if (!step) return;
+        const expected = step.step;
+        let stepOk = false;
+        console.log(`[Kiosco] yaw=${pose.yaw.toFixed(1)}° pitch=${pose.pitch.toFixed(1)}° esperando ${expected} (${idx + 1}/${steps.length})`);
+        if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -YAW_THRESHOLD;
+        else if (expected === 'DERECHA') stepOk = pose.yaw >= YAW_THRESHOLD;
+        // FRENTE con margen muy amplio (30°) para evitar fricción si la cámara
+        // está muy arriba o abajo, o si la estimación tiene sesgo.
+        else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) <= 30 && Math.abs(pose.pitch) <= 30;
+
+        if (stepOk) {
+          console.log(`[Kiosco] paso ${idx + 1}/${steps.length} completado: ${expected}`);
+          markProgress();
+          steps[idx] = { ...step, completed: true };
+          currentStepIdxRef.current = idx + 1;
+          if (idx + 1 >= steps.length) {
+            setEstado('matching');
+            setMessage('Comparando…');
+            probeBufferRef.current = []; // intento nuevo: acumular muestras frescas
+            pantallaRef.current = { revisiones: 0, detectado: null };
+            ultimaMuestraMsRef.current = Date.now();
+            tiemposRef.current.muestras = performance.now();
+            console.log('[Kiosco] challenge completo, tomando muestras…');
+          } else {
+            updateChallengeUI();
+          }
+        }
+        return;
+      }
+
+      if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
+        // Acumular 2 ventanas de PROBE_SAMPLES muestras frontales de buena
+        // calidad; cada ventana se promedia L2 y ambas se envían como probes
+        // independientes para la doble verificación del servidor.
+        const score = (detection?.score as number | undefined) ?? 0;
+        const frontal = Math.abs(pose.yaw) <= PROBE_MAX_ANGLE && Math.abs(pose.pitch) <= PROBE_MAX_ANGLE;
+        const probeOk = oneFace && centered && distance && frontal
+          && score >= PROBE_MIN_SCORE
+          && fallaLuz === null;
+        if (!probeOk) {
+          if (Date.now() - ultimaMuestraMsRef.current > PROBE_MAX_HUECO_MS) probeBufferRef.current = [];
+          setMessage('Acerque el rostro con buena luz…');
           return;
         }
-
-        const det = detections[0] as any;
-        const detection = det.detection;
-        const landmarks = det.landmarks;
-        const video = videoEl;
-        const box = detection.box;
-        
-        const oneFace = detections.length === 1;
-        const oneFaceHint = oneFace ? '' : detections.length === 0 ? 'No se detecta rostro' : 'Solo una persona';
-        
-        const videoW = video.videoWidth;
-        const boxCenterX = box.x + box.width / 2;
-        const centered = Math.abs(boxCenterX - videoW / 2) < videoW * 0.15;
-        const centeredHint = centered ? '' : boxCenterX < videoW / 2 ? 'Muévase a la derecha' : 'Muévase a la izquierda';
-        
-        const faceW = box.width;
-        const distance = faceW >= 120 && faceW <= 300;
-        const distanceHint = faceW < 120 ? 'Acérquese' : faceW > 300 ? 'Aléjese' : '';
-        
-        const pose = estimateHeadPose(landmarks);
-        const light = estimateLuminanceStats(video, box);
-        const brightness = light.mean;
-        const fallaLuz = evaluarIluminacion(light);
-        const frontLight = Math.abs(pose.yaw) <= 35 && Math.abs(pose.pitch) <= 35 && fallaLuz === null;
-        let frontLightHint = '';
-        if (Math.abs(pose.yaw) > 35) frontLightHint = 'Mire de frente';
-        else if (Math.abs(pose.pitch) > 35) frontLightHint = 'Enderece la cabeza';
-        else if (fallaLuz === 'POCA_LUZ') frontLightHint = 'Más luz frontal';
-        else if (fallaLuz === 'SOBREEXPUESTO') frontLightHint = 'Menos luz directa';
-        
-        onQualityChange?.({
-          oneFace, oneFaceHint,
-          centered, centeredHint,
-          distance, distanceHint,
-          frontLight, frontLightHint,
-          allOk: oneFace && centered && distance && frontLight,
-        });
-        
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const displaySize = { width: video.videoWidth, height: video.videoHeight };
-            faceapi.matchDimensions(canvas, displaySize);
-            const resized = faceapi.resizeResults(det, displaySize) as any;
-            
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            const allOk = oneFace && centered && distance && frontLight;
-            const boxColor = allOk ? '#10b981' : '#ef4444';
-            
-            const resizedDet = resized.detection;
-            ctx.strokeStyle = boxColor;
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.rect(resizedDet.box.x, resizedDet.box.y, resizedDet.box.width, resizedDet.box.height);
-            ctx.stroke();
+        ultimaMuestraMsRef.current = Date.now();
+        // Anti-pantalla: el rostro no debe estar dentro de un celular, TV o laptop.
+        // Se revisa en la primera muestra y en la última. Las del medio quedan
+        // cubiertas porque el servidor exige que ambas ventanas (primera y
+        // segunda mitad) coincidan en el mismo empleado.
+        const pantalla = pantallaRef.current;
+        const ultimaMuestra = probeBufferRef.current.length + 1 >= PROBE_TOTAL;
+        if (ultimaMuestra || probeBufferRef.current.length === 0) {
+          const intento = attemptIdRef.current;
+          const dispositivos = await detectarDispositivos(video);
+          if (attemptIdRef.current !== intento || stateRef.current !== 'matching') return;
+          pantalla.revisiones++;
+          const hallado = dispositivoSobreRostro(box, dispositivos);
+          if (hallado) {
+            pantalla.detectado = hallado;
+            console.log(`[Kiosco] rostro dentro de ${hallado.clase} (${hallado.score.toFixed(2)}): marcaje bloqueado`);
           }
         }
-        
-        // Liveness: frame-to-frame movement (delta > 3 grados)
-        let move = false;
-        if (lastPoseRef.current) {
-          const dy = pose.yaw - lastPoseRef.current.yaw;
-          const dp = pose.pitch - lastPoseRef.current.pitch;
-          if (Math.abs(dy) > 3 || Math.abs(dp) > 3) {
-            move = true;
-          }
-        }
-        lastPoseRef.current = { yaw: pose.yaw, pitch: pose.pitch };
-        
-        // Registrar serie para challenge
-        if (stateRef.current === 'challenge_active') {
-          const now = Date.now();
-          seriesRef.current.push({ yaw: pose.yaw, pitch: pose.pitch, t: now - challengeStartTimeRef.current });
-        }
 
-        // Máquina de estados.
-        // NOTA: usa refs (no el state de React): el intervalo se crea una vez
-        // y el state llega obsoleto al closure. El match se dispara con llamada
-        // directa (doMatch) en el mismo tick, nunca esperando al próximo.
-        if (stateRef.current === 'scanning') {
-          if (move) {
-            console.log('[Kiosco] movimiento detectado, solicitando challenge…');
-            setState('challenge_requested');
-            setMessage('Solicitando desafío…');
-            await requestChallenge();
-          }
-          return;
-        }
-
-        if (stateRef.current === 'challenge_active') {
-          const steps = challengeStepsRef.current;
-          if (steps.length === 0) return; // challenge aún no cargado, seguir acumulando serie
-          const idx = currentStepIdxRef.current;
-          const step = steps[idx];
-          if (!step) return;
-          const expected = step.step;
-          let stepOk = false;
-          console.log(`[Kiosco] yaw=${pose.yaw.toFixed(1)}° pitch=${pose.pitch.toFixed(1)}° esperando ${expected} (${idx + 1}/${steps.length})`);
-          if (expected === 'IZQUIERDA') stepOk = pose.yaw <= -YAW_THRESHOLD;
-          else if (expected === 'DERECHA') stepOk = pose.yaw >= YAW_THRESHOLD;
-          // FRENTE con margen muy amplio (30°) para evitar fricción si la cámara
-          // está muy arriba o abajo, o si la estimación tiene sesgo.
-          else if (expected === 'FRENTE') stepOk = Math.abs(pose.yaw) <= 30 && Math.abs(pose.pitch) <= 30;
-
-          if (stepOk) {
-            console.log(`[Kiosco] paso ${idx + 1}/${steps.length} completado: ${expected}`);
-            markProgress();
-            steps[idx] = { ...step, completed: true };
-            currentStepIdxRef.current = idx + 1;
-            if (idx + 1 >= steps.length) {
-              setState('matching');
-              setMessage('Comparando…');
-              probeBufferRef.current = []; // intento nuevo: acumular muestras frescas
-              pantallaRef.current = { revisiones: 0, ultimoMs: 0, detectado: null };
-              console.log('[Kiosco] challenge completo, enviando probe al servidor en el próximo ciclo…');
-            } else {
-              updateChallengeUI();
-            }
-          }
-          return;
-        }
-
-        if ((stateRef.current as IdentifyState) === 'matching' && !matchingRef.current) {
-          // Acumular 2 ventanas de PROBE_SAMPLES muestras frontales de buena
-          // calidad; cada ventana se promedia L2 y ambas se envían como probes
-          // independientes para la doble verificación del servidor.
-          const score = (detection?.score as number | undefined) ?? 0;
-          const frontal = Math.abs(pose.yaw) <= PROBE_MAX_ANGLE && Math.abs(pose.pitch) <= PROBE_MAX_ANGLE;
-          const probeOk = oneFace && centered && distance && frontal
-            && score >= PROBE_MIN_SCORE
-            && fallaLuz === null;
-          if (!probeOk) {
-            probeBufferRef.current = [];
-            setMessage('Acerque el rostro con buena luz…');
+        if (!pantalla.detectado) {
+          probeBufferRef.current.push(Float32Array.from(det.descriptor as Float32Array));
+          if (probeBufferRef.current.length > PROBE_TOTAL) probeBufferRef.current.shift();
+          if (probeBufferRef.current.length < PROBE_TOTAL) {
+            setMessage(`Comparando… muestra ${probeBufferRef.current.length}/${PROBE_TOTAL}`);
             markProgress();
             return;
           }
-          // Anti-pantalla: el rostro no debe estar dentro de un celular, TV o laptop.
-          // Se revisa al empezar, cada ANTI_PANTALLA.intervaloMs y siempre en la
-          // última muestra, para que el probe enviado quede cubierto.
-          const pantalla = pantallaRef.current;
-          const ultimaMuestra = probeBufferRef.current.length + 1 >= PROBE_TOTAL;
-          if (ultimaMuestra || Date.now() - pantalla.ultimoMs >= ANTI_PANTALLA.intervaloMs) {
-            const intento = attemptIdRef.current;
-            const dispositivos = await detectarDispositivos(video);
-            if (attemptIdRef.current !== intento || stateRef.current !== 'matching') return;
-            pantalla.revisiones++;
-            pantalla.ultimoMs = Date.now();
-            const hallado = dispositivoSobreRostro(box, dispositivos);
-            if (hallado) {
-              pantalla.detectado = hallado;
-              console.log(`[Kiosco] rostro dentro de ${hallado.clase} (${hallado.score.toFixed(2)}): marcaje bloqueado`);
-            }
+        }
+        matchingRef.current = true;
+        const myAttempt = attemptIdRef.current;
+        markProgress();
+        tiemposRef.current.envio = performance.now();
+        // Con dispositivo detectado se envía igual (un solo probe) para que el
+        // servidor lo audite con la identidad mostrada; el servidor no ficha.
+        console.log(pantalla.detectado ? '[Kiosco] reportando celular/pantalla al servidor…' : '[Kiosco] enviando doble probe al servidor…');
+        try {
+          let descriptor: number[];
+          let descriptor2: number[] | undefined;
+          if (pantalla.detectado) {
+            descriptor = Array.from(det.descriptor as Float32Array);
+          } else {
+            descriptor = Array.from(averageDescriptors(probeBufferRef.current.slice(0, PROBE_SAMPLES)));
+            descriptor2 = Array.from(averageDescriptors(probeBufferRef.current.slice(PROBE_SAMPLES, PROBE_TOTAL)));
           }
+          probeBufferRef.current = [];
+          const quality = {
+            earOk: true, // parpadeo ya no es requisito
+            poseOk: move,
+            brightness: Math.round(brightness),
+            clipHigh: Number(light.clipHigh.toFixed(3)),
+            clipLow: Number(light.clipLow.toFixed(3)),
+            centered,
+            distance,
+          };
+          const nonce = crypto.randomUUID();
+          const timestamp = Date.now();
 
-          if (!pantalla.detectado) {
-            probeBufferRef.current.push(Float32Array.from(det.descriptor as Float32Array));
-            if (probeBufferRef.current.length > PROBE_TOTAL) probeBufferRef.current.shift();
-            if (probeBufferRef.current.length < PROBE_TOTAL) {
-              setMessage(`Comparando… muestra ${probeBufferRef.current.length}/${PROBE_TOTAL}`);
-              markProgress();
-              return;
-            }
+          const result = await api.kiosco.match({
+            descriptor,
+            descriptor2,
+            quality,
+            nonce,
+            timestamp,
+            challengeId: challengeIdRef.current ?? undefined,
+            series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
+            pantalla: {
+              revisado: pantalla.revisiones > 0,
+              detectado: pantalla.detectado !== null,
+              revisiones: pantalla.revisiones,
+              clase: pantalla.detectado?.clase,
+              score: pantalla.detectado ? Number(pantalla.detectado.score.toFixed(3)) : undefined,
+            },
+          });
+          console.log('[Kiosco] respuesta match:', result.ok ? `${result.tipo} — ${result.msg}` : result);
+          registrarTiempos();
+          void prepararChallenge(); // dejar listo el reto de la siguiente persona
+          if (attemptIdRef.current !== myAttempt) {
+            console.log('[Kiosco] respuesta descartada (reinicio por watchdog)');
+            matchingRef.current = false;
+            return;
           }
-          matchingRef.current = true;
-          const myAttempt = attemptIdRef.current;
           markProgress();
-          // Con dispositivo detectado se envía igual (un solo probe) para que el
-          // servidor lo audite con la identidad mostrada; el servidor no ficha.
-          console.log(pantalla.detectado ? '[Kiosco] reportando celular/pantalla al servidor…' : '[Kiosco] enviando doble probe al servidor…');
-          try {
-            let descriptor: number[];
-            let descriptor2: number[] | undefined;
-            if (pantalla.detectado) {
-              descriptor = Array.from(det.descriptor as Float32Array);
-            } else {
-              descriptor = Array.from(averageDescriptors(probeBufferRef.current.slice(0, PROBE_SAMPLES)));
-              descriptor2 = Array.from(averageDescriptors(probeBufferRef.current.slice(PROBE_SAMPLES, PROBE_TOTAL)));
-            }
-            probeBufferRef.current = [];
-            const quality = {
-              earOk: true, // parpadeo ya no es requisito
-              poseOk: move,
-              brightness: Math.round(brightness),
-              clipHigh: Number(light.clipHigh.toFixed(3)),
-              clipLow: Number(light.clipLow.toFixed(3)),
-              centered,
-              distance,
-            };
-            const nonce = crypto.randomUUID();
-            const timestamp = Date.now();
 
-            const result = await api.kiosco.match({
-              descriptor,
-              descriptor2,
-              quality,
-              nonce,
-              timestamp,
-              challengeId: challengeIdRef.current ?? undefined,
-              series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
-              pantalla: {
-                revisado: pantalla.revisiones > 0,
-                detectado: pantalla.detectado !== null,
-                revisiones: pantalla.revisiones,
-                clase: pantalla.detectado?.clase,
-                score: pantalla.detectado ? Number(pantalla.detectado.score.toFixed(3)) : undefined,
-              },
-            });
-            console.log('[Kiosco] respuesta match:', result.ok ? `${result.tipo} — ${result.msg}` : result);
-            if (attemptIdRef.current !== myAttempt) {
-              console.log('[Kiosco] respuesta descartada (reinicio por watchdog)');
-              matchingRef.current = false;
-              return;
-            }
-            markProgress();
-
-            if (result.ok) {
-              setState('success');
-              const preview = generateFacePreview(video, det.detection.box);
-              setPreviewCanvas(preview);
+          if (result.ok) {
+            setEstado('success');
+            const preview = generateFacePreview(video, det.detection.box);
+            setPreviewCanvas(preview);
               
-              onMatch(result as MatchResult);
+            onMatch(result as MatchResult);
               
-              setTimeout(() => {
-                if (stateRef.current === 'success') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 2000);
-            } else if (result.tipo === 'cooldown') {
-              const min = result.error?.match(/(\d+)/)?.[1] ?? '30';
-              setState('cooldown');
-              setMessage(`Ya marcó. Espere ${min} min`);
-              onCooldown(parseInt(min));
-              setTimeout(() => {
-                if (stateRef.current === 'cooldown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 2000);
-            } else if (result.tipo === 'duplicado') {
-              setState('unknown');
-              setMessage(result.error ?? 'Ya ha registrado su entrada y salida por hoy');
-              onUnknown();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 2000);
-            } else if (result.tipo === 'fuera_de_margen') {
-              const msg = result.error ?? 'Fuera de horario — requiere autorización (rostro reconocido, solicite pase previo)';
-              setState('rejected');
-              setMessage(msg);
-              notifyRejected({ tipo: 'fuera_de_margen', msg });
-              setTimeout(() => {
-                if (stateRef.current === 'rejected') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 3500);
-            } else if (result.tipo === 'bad_challenge') {
-              setState('unknown');
-              setMessage(result.error ?? 'Desafío inválido');
-              onUnknown();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 2000);
-            } else {
-              setState('unknown');
-              setMessage('Rostro no reconocido');
-              onUnknown();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-                matchingRef.current = false;
-                resetChallenge();
-              }, 2000);
-            }
-          } catch (e: any) {
-            console.log('[Kiosco] error match:', e?.status, e?.data?.error ?? e?.message);
-            if (attemptIdRef.current !== myAttempt) {
-              console.log('[Kiosco] error descartado (reinicio por watchdog)');
-              matchingRef.current = false;
-              return;
-            }
-            markProgress();
-            if (e.status === 401) {
-              onError?.('Error de autenticación del kiosco');
-              setState('error');
-            } else if (e.status === 400) {
-              if (e.data?.tipo === 'duplicado') {
-                setState('rejected');
-                setMessage(e.data.error);
-                notifyRejected({ tipo: 'duplicado', msg: e.data.error });
-              } else {
-                setState('unknown');
-                setMessage(e.data?.error ?? 'Datos inválidos');
-                onUnknown();
+            setTimeout(() => {
+              if (stateRef.current === 'success') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
               }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown' || stateRef.current === 'rejected') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 3500);
-            } else if (e.status === 404) {
-              const causa = e.data?.causa ? ` — ${e.data.causa}` : '';
-              const msg = `Rostro no reconocido — verifique registro / re-enrole en condiciones del kiosko${causa}`;
-              setState('unknown');
-              setMessage(msg);
-              console.log('[Kiosco] sin match (404):', e?.data ?? e?.message);
-              onUnknown();
+            }, LIBERAR_TRAS_EXITO_MS);
+          } else if (result.tipo === 'cooldown') {
+            const min = result.error?.match(/(\d+)/)?.[1] ?? '30';
+            setEstado('cooldown');
+            setMessage(`Ya marcó. Espere ${min} min`);
+            onCooldown(parseInt(min));
+            setTimeout(() => {
+              if (stateRef.current === 'cooldown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 2000);
-            } else if (e.status === 409) {
-              setState('unknown');
-              setMessage('Intento repetido');
-              onUnknown();
+            }, 2000);
+          } else if (result.tipo === 'duplicado') {
+            setEstado('unknown');
+            setMessage(result.error ?? 'Ya ha registrado su entrada y salida por hoy');
+            onUnknown();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'unknown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 2000);
-            } else if (e.status === 429) {
-              const min = e.data?.error?.match(/(\d+)/)?.[1] ?? '30';
-              setState('cooldown');
-              setMessage(`Ya marcó. Espere ${min} min`);
-              onCooldown(parseInt(min));
+            }, 2000);
+          } else if (result.tipo === 'fuera_de_margen') {
+            const msg = result.error ?? 'Fuera de horario — requiere autorización (rostro reconocido, solicite pase previo)';
+            setEstado('rejected');
+            setMessage(msg);
+            notifyRejected({ tipo: 'fuera_de_margen', msg });
+            setTimeout(() => {
+              if (stateRef.current === 'rejected') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'cooldown') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 2000);
-            } else if (e.status === 403 && e.data?.tipo === 'pantalla_detectada') {
-              const msg = e.data?.error ?? `Se detectó ${etiquetaDispositivo(pantallaRef.current.detectado?.clase)} frente a la cámara`;
-              setState('rejected');
-              setMessage(msg);
-              notifyRejected({ tipo: 'pantalla_detectada', msg });
+            }, 3500);
+          } else if (result.tipo === 'bad_challenge') {
+            setEstado('unknown');
+            setMessage(result.error ?? 'Desafío inválido');
+            onUnknown();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'rejected') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 3500);
-            } else if (e.status === 403) {
-              // Reposo médico: el rechazo no se resuelve con un pase, no sugerirlo.
-              const msg = e.data?.tipo === 'reposo_medico'
-                ? e.data.error
-                : e.data?.error
-                  ? `${e.data.error} (rostro reconocido, solicite pase previo)`
-                  : 'Fuera de horario — rostro reconocido, solicite pase previo';
-              setState('rejected');
-              setMessage(msg);
-              console.log('[Kiosco] fichaje rechazado por horario (rostro sí coincidió):', e?.data?.error ?? e?.message);
-              notifyRejected({
-                tipo: e.data?.tipo ?? 'fuera_de_margen',
-                msg,
-                nombre: e.data?.nombre,
-                apellido: e.data?.apellido,
-                cedula: e.data?.cedula,
-                empleadoId: e.data?.empleadoId,
-              });
+            }, 2000);
+          } else {
+            setEstado('unknown');
+            setMessage('Rostro no reconocido');
+            onUnknown();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
               matchingRef.current = false;
               resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'rejected') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 3500);
+            }, 2000);
+          }
+        } catch (e: any) {
+          console.log('[Kiosco] error match:', e?.status, e?.data?.error ?? e?.message);
+          registrarTiempos();
+          void prepararChallenge(); // dejar listo el reto de la siguiente persona
+          if (attemptIdRef.current !== myAttempt) {
+            console.log('[Kiosco] error descartado (reinicio por watchdog)');
+            matchingRef.current = false;
+            return;
+          }
+          markProgress();
+          if (e.status === 401) {
+            onError?.('Error de autenticación del kiosco');
+            setEstado('error');
+          } else if (e.status === 400) {
+            if (e.data?.tipo === 'duplicado') {
+              setEstado('rejected');
+              setMessage(e.data.error);
+              notifyRejected({ tipo: 'duplicado', msg: e.data.error });
             } else {
-              console.error('[FaceIdentify] Error match:', e);
-              onError?.('Error en el servidor: ' + (e.data?.error ?? e.message));
-              setState('error');
-              matchingRef.current = false;
-              resetChallenge();
-              setTimeout(() => {
-                if (stateRef.current === 'error') {
-                  setState('scanning');
-                  setMessage('Escaneando… presente su rostro');
-                }
-              }, 2000);
+              setEstado('unknown');
+              setMessage(e.data?.error ?? 'Datos inválidos');
+              onUnknown();
             }
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown' || stateRef.current === 'rejected') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 3500);
+          } else if (e.status === 404) {
+            const causa = e.data?.causa ? ` — ${e.data.causa}` : '';
+            const msg = `Rostro no reconocido — verifique registro / re-enrole en condiciones del kiosko${causa}`;
+            setEstado('unknown');
+            setMessage(msg);
+            console.log('[Kiosco] sin match (404):', e?.data ?? e?.message);
+            onUnknown();
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 2000);
+          } else if (e.status === 409) {
+            setEstado('unknown');
+            setMessage('Intento repetido');
+            onUnknown();
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'unknown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 2000);
+          } else if (e.status === 429) {
+            const min = e.data?.error?.match(/(\d+)/)?.[1] ?? '30';
+            setEstado('cooldown');
+            setMessage(`Ya marcó. Espere ${min} min`);
+            onCooldown(parseInt(min));
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'cooldown') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 2000);
+          } else if (e.status === 403 && e.data?.tipo === 'pantalla_detectada') {
+            const msg = e.data?.error ?? `Se detectó ${etiquetaDispositivo(pantallaRef.current.detectado?.clase)} frente a la cámara`;
+            setEstado('rejected');
+            setMessage(msg);
+            notifyRejected({ tipo: 'pantalla_detectada', msg });
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'rejected') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 3500);
+          } else if (e.status === 403) {
+            // Reposo médico: el rechazo no se resuelve con un pase, no sugerirlo.
+            const msg = e.data?.tipo === 'reposo_medico'
+              ? e.data.error
+              : e.data?.error
+                ? `${e.data.error} (rostro reconocido, solicite pase previo)`
+                : 'Fuera de horario — rostro reconocido, solicite pase previo';
+            setEstado('rejected');
+            setMessage(msg);
+            console.log('[Kiosco] fichaje rechazado por horario (rostro sí coincidió):', e?.data?.error ?? e?.message);
+            notifyRejected({
+              tipo: e.data?.tipo ?? 'fuera_de_margen',
+              msg,
+              nombre: e.data?.nombre,
+              apellido: e.data?.apellido,
+              cedula: e.data?.cedula,
+              empleadoId: e.data?.empleadoId,
+            });
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'rejected') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 3500);
+          } else {
+            console.error('[FaceIdentify] Error match:', e);
+            onError?.('Error en el servidor: ' + (e.data?.error ?? e.message));
+            setEstado('error');
+            matchingRef.current = false;
+            resetChallenge();
+            setTimeout(() => {
+              if (stateRef.current === 'error') {
+                setEstado('scanning');
+                setMessage('Escaneando… presente su rostro');
+              }
+            }, 2000);
           }
         }
-      } catch (e) {
-        console.error('[FaceIdentify] Error inferencia:', e);
       }
-    }, INFERENCE_INTERVAL_MS);
+    } catch (e) {
+      console.error('[FaceIdentify] Error inferencia:', e);
+    }
   };
 
   useEffect(() => {
@@ -751,7 +841,8 @@ export function FaceIdentify({
 
   useEffect(() => {
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      loopActivoRef.current = false;
+      if (timerRef.current) clearTimeout(timerRef.current);
       if (watchdogRef.current) clearInterval(watchdogRef.current);
       streamRef.current?.getTracks().forEach(t => t.stop());
     };

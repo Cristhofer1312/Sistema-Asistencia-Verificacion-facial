@@ -8,9 +8,13 @@
  * cara se está mostrando en un dispositivo y el marcaje se rechaza. Un
  * celular en la mano o en el bolsillo (fuera del rostro) no bloquea.
  *
- * Limitación: si la pantalla llena todo el cuadro (sin borde visible) el
- * modelo puede no reconocer el dispositivo. Tampoco debe haber televisores o
- * monitores detrás del área de marcaje: un rostro delante de uno se rechaza.
+ * Limitación importante (medida con composiciones el 2026-10-27): el modelo
+ * reconoce el celular cuando el rostro ocupa una parte de su pantalla, pero NO
+ * cuando el rostro la llena (el celular acercado a la cámara para que la cara
+ * alcance el tamaño mínimo del kiosco), ni bajando minScore a 0.15. Este
+ * detector frena intentos casuales, no a un atacante que acerque el celular.
+ * Tampoco debe haber televisores o monitores detrás del área de marcaje: un
+ * rostro delante de uno se rechaza.
  */
 
 export const ANTI_PANTALLA = {
@@ -25,9 +29,10 @@ export const ANTI_PANTALLA = {
   minScore: 0.4,
   /** Fracción del área del rostro que debe caer dentro del dispositivo. */
   minSolape: 0.5,
-  /** Cada cuánto se revisa el cuadro mientras se toman las muestras del probe. */
-  intervaloMs: 600,
 };
+
+/** Canales de salida de los dispositivos, en el orden en que se filtran en la GPU. */
+export const CANALES_DISPOSITIVO: readonly number[] = Object.keys(ANTI_PANTALLA.clases).map(Number);
 
 /** Nombre con artículo para los mensajes: "Se detectó un celular…". */
 export const ETIQUETA_DISPOSITIVO: Readonly<Record<string, string>> = {
@@ -63,9 +68,10 @@ export interface RevisionPantalla {
 }
 
 /**
- * Decodifica la salida cruda de COCO-SSD (igual que buildDetectedObjects del
+ * Decodifica la salida de COCO-SSD (igual que buildDetectedObjects del
  * paquete oficial) quedándose solo con las clases de dispositivos.
- * - scores: [numCajas × numClases]
+ * - scores: [numCajas × canales.length]; la columna j es el canal canales[j].
+ *   El kiosco filtra en la GPU y pasa CANALES_DISPOSITIVO (3 columnas en vez de 90).
  * - cajas:  [numCajas × 4] normalizadas como [minY, minX, maxY, maxX]
  * No aplica NMS: alcanza con saber si alguna caja cubre el rostro.
  */
@@ -73,19 +79,20 @@ export function extraerDispositivos(
   scores: ArrayLike<number>,
   cajas: ArrayLike<number>,
   numCajas: number,
-  numClases: number,
+  canales: readonly number[],
   ancho: number,
   alto: number,
   minScore: number = ANTI_PANTALLA.minScore,
 ): DispositivoDetectado[] {
   const encontrados: DispositivoDetectado[] = [];
+  const columnas = canales.length;
   for (let i = 0; i < numCajas; i++) {
     let mejorCanal = -1;
     let mejorScore = minScore;
-    for (const canalTxt of Object.keys(ANTI_PANTALLA.clases)) {
-      const canal = Number(canalTxt);
-      if (canal >= numClases) continue;
-      const s = scores[i * numClases + canal];
+    for (let j = 0; j < columnas; j++) {
+      const canal = canales[j];
+      if (!(canal in ANTI_PANTALLA.clases)) continue;
+      const s = scores[i * columnas + j];
       if (s >= mejorScore) {
         mejorScore = s;
         mejorCanal = canal;

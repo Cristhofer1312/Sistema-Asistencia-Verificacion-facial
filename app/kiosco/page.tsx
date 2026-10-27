@@ -92,6 +92,8 @@ export default function Kiosco() {
   const [mensaje, setMensaje] = useState("");
   const [calidad, setCalidad] = useState<Calidad | null>(null);
   const [live, setLive] = useState<Liveness | null>(null);
+  // false = el reconocimiento corre en el procesador (varias veces más lento).
+  const [conGpu, setConGpu] = useState(true);
   const [regla, setRegla] = useState<{ horaEntrada: string; horaLimite: string; horaReferencia: string } | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -205,9 +207,17 @@ export default function Kiosco() {
             onQualityChange={(c: Omit<Calidad, "ts">) => setCalidad({ ...c, ts: Date.now() })}
             onLivenessChange={setLive}
             onStateChange={(s, m) => { setEstado(s); setMensaje(m); }}
+            onAceleracion={(info) => setConGpu(info.gpu)}
             hideStatus
           />
         </div>
+
+        {!conGpu && (
+          <p className="kq-aviso-gpu" role="note">
+            Este equipo procesa sin aceleración gráfica (GPU) y el reconocimiento será lento.
+            Revise en Chrome <b>chrome://gpu</b> que WebGL diga &quot;Hardware accelerated&quot;.
+          </p>
+        )}
 
         <div className={`kq-guia kq-t-${guia.tono}`} role="status" aria-live="polite">
           <span className="kq-guia-dot" aria-hidden="true" />
@@ -279,6 +289,7 @@ export default function Kiosco() {
         .kq-t-ok      { --tono: var(--kq-ok); }
         .kq-t-warn    { --tono: var(--kq-warn); }
         .kq-t-bad     { --tono: var(--kq-bad); }
+        .kq-aviso-gpu { width: 100%; margin: 0; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--kq-warn); color: var(--kq-warn); background: var(--kq-surface); font-size: .9rem; text-align: center; }
 
         .kq-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 32px; border-bottom: 1px solid var(--kq-border); }
         .kq-brand { display: flex; align-items: center; gap: 14px; }

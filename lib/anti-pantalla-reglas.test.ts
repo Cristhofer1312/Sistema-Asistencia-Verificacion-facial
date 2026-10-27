@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ANTI_PANTALLA,
+  CANALES_DISPOSITIVO,
   extraerDispositivos,
   fraccionDentro,
   dispositivoSobreRostro,
@@ -14,6 +15,7 @@ const NUM_CLASES = 90; // salida de SSDLite MobileNet v2 (COCO)
 const CANAL_CELULAR = 76;
 const CANAL_TV = 71;
 const CANAL_PERSONA = 0;
+const TODOS_LOS_CANALES = Array.from({ length: NUM_CLASES }, (_, i) => i); // salida sin filtrar
 
 /** Arma la salida cruda del modelo: una fila de scores y una caja [minY,minX,maxY,maxX] por detección. */
 function salidaModelo(filas: { canal: number; score: number; caja: [number, number, number, number] }[]) {
@@ -29,7 +31,7 @@ function salidaModelo(filas: { canal: number; score: number; caja: [number, numb
 describe('extraerDispositivos', () => {
   it('decodifica un celular con la caja en píxeles (formato de coco-ssd)', () => {
     const { scores, cajas, numCajas } = salidaModelo([{ canal: CANAL_CELULAR, score: 0.8, caja: [0.25, 0.5, 0.75, 0.75] }]);
-    const r = extraerDispositivos(scores, cajas, numCajas, NUM_CLASES, 640, 480);
+    const r = extraerDispositivos(scores, cajas, numCajas, TODOS_LOS_CANALES, 640, 480);
     expect(r).toHaveLength(1);
     expect(r[0].clase).toBe('cell phone');
     expect(r[0].score).toBeCloseTo(0.8);
@@ -38,12 +40,12 @@ describe('extraerDispositivos', () => {
 
   it('ignora clases que no son dispositivos (persona)', () => {
     const { scores, cajas, numCajas } = salidaModelo([{ canal: CANAL_PERSONA, score: 0.99, caja: [0, 0, 1, 1] }]);
-    expect(extraerDispositivos(scores, cajas, numCajas, NUM_CLASES, 640, 480)).toEqual([]);
+    expect(extraerDispositivos(scores, cajas, numCajas, TODOS_LOS_CANALES, 640, 480)).toEqual([]);
   });
 
   it('descarta dispositivos bajo la confianza mínima', () => {
     const { scores, cajas, numCajas } = salidaModelo([{ canal: CANAL_TV, score: ANTI_PANTALLA.minScore - 0.01, caja: [0, 0, 1, 1] }]);
-    expect(extraerDispositivos(scores, cajas, numCajas, NUM_CLASES, 640, 480)).toEqual([]);
+    expect(extraerDispositivos(scores, cajas, numCajas, TODOS_LOS_CANALES, 640, 480)).toEqual([]);
   });
 
   it('ordena por confianza descendente', () => {
@@ -51,8 +53,19 @@ describe('extraerDispositivos', () => {
       { canal: CANAL_TV, score: 0.5, caja: [0, 0, 0.5, 0.5] },
       { canal: CANAL_CELULAR, score: 0.9, caja: [0.5, 0.5, 1, 1] },
     ]);
-    const r = extraerDispositivos(scores, cajas, numCajas, NUM_CLASES, 100, 100);
+    const r = extraerDispositivos(scores, cajas, numCajas, TODOS_LOS_CANALES, 100, 100);
     expect(r.map((d) => d.clase)).toEqual(['cell phone', 'tv']);
+  });
+
+  it('acepta los puntajes ya filtrados en la GPU (3 columnas, mismo resultado)', () => {
+    expect(CANALES_DISPOSITIVO).toEqual([71, 72, 76]);
+    // Una caja: tv 0.2, laptop 0.1, celular 0.85 (columnas en el orden de CANALES_DISPOSITIVO)
+    const scores = new Float32Array([0.2, 0.1, 0.85]);
+    const cajas = new Float32Array([0.25, 0.5, 0.75, 0.75]);
+    const r = extraerDispositivos(scores, cajas, 1, CANALES_DISPOSITIVO, 640, 480);
+    expect(r).toHaveLength(1);
+    expect(r[0].clase).toBe('cell phone');
+    expect(r[0].caja).toEqual({ x: 320, y: 120, width: 160, height: 240 });
   });
 });
 

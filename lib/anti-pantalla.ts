@@ -5,7 +5,7 @@
  */
 
 import * as faceapi from '@vladmandic/face-api';
-import { ANTI_PANTALLA, extraerDispositivos, type DispositivoDetectado } from './anti-pantalla-reglas';
+import { ANTI_PANTALLA, CANALES_DISPOSITIVO, extraerDispositivos, type DispositivoDetectado } from './anti-pantalla-reglas';
 
 type FuenteImagen = HTMLVideoElement | HTMLImageElement | HTMLCanvasElement;
 
@@ -22,6 +22,7 @@ interface Tf {
   loadGraphModel(url: string): Promise<GraphModel>;
   browser: { fromPixels(fuente: FuenteImagen): Tensor };
   expandDims(t: Tensor): Tensor;
+  gather(t: Tensor, indices: number[], eje: number): Tensor;
   zeros(forma: number[], dtype: string): Tensor;
   tidy<T>(fn: () => T): T;
   dispose(t: Tensor[]): void;
@@ -60,10 +61,14 @@ export async function detectarDispositivos(fuente: FuenteImagen): Promise<Dispos
   const [, alto, ancho] = entrada.shape;
   try {
     const salida = await modelo.executeAsync(entrada);
+    // Se filtran en la GPU las 3 clases de dispositivos: se copian a la CPU
+    // ~1.900 × 3 puntajes en vez de ~1.900 × 90 (unos 700 KB por revisión).
+    const scoresDisp = tf.gather(salida[0], [...CANALES_DISPOSITIVO], 2);
     try {
-      const [scores, cajas] = await Promise.all([salida[0].data(), salida[1].data()]);
-      return extraerDispositivos(scores, cajas, salida[0].shape[1], salida[0].shape[2], ancho, alto);
+      const [scores, cajas] = await Promise.all([scoresDisp.data(), salida[1].data()]);
+      return extraerDispositivos(scores, cajas, salida[0].shape[1], CANALES_DISPOSITIVO, ancho, alto);
     } finally {
+      scoresDisp.dispose();
       tf.dispose(salida);
     }
   } finally {

@@ -13,7 +13,7 @@ type Log = Awaited<ReturnType<typeof api.auditoria.list>>["filas"][number];
 // Mismas acciones que enum AccionAuditoria (prisma/schema.prisma), agrupadas para filtrar
 const CATEGORIAS: { id: string; label: string; acciones: string[] }[] = [
   { id: "kiosco", label: "Marcajes del kiosco", acciones: ["FICHAJE_ENTRADA", "FICHAJE_SALIDA", "MATCH_KIOSCO"] },
-  { id: "incidentes", label: "Incidentes del kiosco", acciones: ["MATCH_KIOSCO_UNKNOWN", "MATCH_KIOSCO_REPLAY", "MATCH_KIOSCO_BAD_QUALITY", "MATCH_KIOSCO_BAD_CHALLENGE"] },
+  { id: "incidentes", label: "Incidentes del kiosco", acciones: ["MATCH_KIOSCO_UNKNOWN", "MATCH_KIOSCO_REPLAY", "MATCH_KIOSCO_BAD_QUALITY", "MATCH_KIOSCO_BAD_CHALLENGE", "MATCH_KIOSCO_PANTALLA"] },
   { id: "asistencia", label: "Justificaciones y pases", acciones: ["JUSTIFICAR", "CREAR_PASE", "CREAR_JUSTIFICACION_ANTICIPADA", "FALTA_PROYECTADA"] },
   { id: "permisos", label: "Vacaciones, reposos y permisos", acciones: ["CREAR_VACACION", "ELIMINAR_VACACION", "ANULAR_VACACION", "CREAR_REPOSO", "ELIMINAR_REPOSO", "ANULAR_REPOSO", "REACTIVAR_REPOSO", "CREAR_PERMISO_ESTUDIO", "ACTUALIZAR_PERMISO_ESTUDIO", "SUSPENDER_PERMISO_ESTUDIO", "ELIMINAR_PERMISO_ESTUDIO"] },
   { id: "config", label: "Horarios y feriados", acciones: ["CREAR_REGLA", "CREAR_FERIADO", "ELIMINAR_FERIADO"] },
@@ -24,7 +24,7 @@ const TODAS_ACCIONES = CATEGORIAS.flatMap(c => c.acciones);
 
 const ACCION_BADGE: Record<string, string> = {
   FICHAJE_ENTRADA: "b-tiempo", FICHAJE_SALIDA: "b-tiempo", MATCH_KIOSCO: "b-tiempo",
-  MATCH_KIOSCO_UNKNOWN: "b-tarde", MATCH_KIOSCO_REPLAY: "b-falta", MATCH_KIOSCO_BAD_QUALITY: "b-tarde", MATCH_KIOSCO_BAD_CHALLENGE: "b-falta",
+  MATCH_KIOSCO_UNKNOWN: "b-tarde", MATCH_KIOSCO_REPLAY: "b-falta", MATCH_KIOSCO_BAD_QUALITY: "b-tarde", MATCH_KIOSCO_BAD_CHALLENGE: "b-falta", MATCH_KIOSCO_PANTALLA: "b-falta",
   JUSTIFICAR: "b-just", CREAR_JUSTIFICACION_ANTICIPADA: "b-just", FALTA_PROYECTADA: "b-falta", CREAR_PASE: "b-fer",
   CREAR_REGLA: "b-just", CREAR_FERIADO: "b-fer", ELIMINAR_FERIADO: "b-falta",
   CREAR_VACACION: "b-vac", ELIMINAR_VACACION: "b-falta", ANULAR_VACACION: "b-falta",

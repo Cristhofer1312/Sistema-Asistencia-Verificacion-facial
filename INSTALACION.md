@@ -262,6 +262,8 @@ El cierre diario marca las faltas cada 15 minutos sobre los últimos 7 días. Pa
 | `npm install` falla con `ERESOLVE` | Usa `npm ci --legacy-peer-deps` (paso A.4). |
 | `Can't reach database server at localhost:5433` | La base de datos no está corriendo: `docker compose up -d db`. |
 | Error 404 en `/models/*.json` | No se copiaron los modelos faciales: `npm run models`. |
+| `[modelos] No se pudo descargar ...` | La primera instalación descarga el detector de celulares y pantallas (~18 MB) y necesita internet. Conecte el equipo y repita `npm run models` (o el script de instalación). |
+| El kiosco dice "Se detectó un celular o pantalla" sin que haya uno | Hay un televisor o monitor **detrás** de la persona, en el campo de la cámara. Cambie la orientación del kiosco o retire la pantalla del fondo. Los intentos quedan en Auditoría → Incidentes del kiosco. |
 | El kiosco responde "no autorizado" al fichar | `API_KIOSCO_KEY` y `NEXT_PUBLIC_API_KIOSCO_KEY` no coinciden. Corrígelas y reinicia la app (en el modo B, vuelve a construir con `--build`). |
 | La cámara no se activa desde otro equipo | Falta HTTPS (paso B.2). |
 | Usuario bloqueado | Tras 5 intentos fallidos, el usuario queda bloqueado 15 minutos. |

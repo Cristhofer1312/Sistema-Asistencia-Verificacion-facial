@@ -7,6 +7,7 @@ import { euclideanDistanceServer, findBestMatchServer, agreeMatches, MATCH_DISTA
 import { getVenezuelaDate, toDateOnly } from "@/lib/date-utils";
 import { executeFichaje } from "@/lib/fichaje";
 import { evaluarIluminacion } from "@/lib/face-quality";
+import { validarRevisionPantalla, etiquetaDispositivo } from "@/lib/anti-pantalla-reglas";
 
 const KIOSCO_KEY = process.env.API_KIOSCO_KEY ?? "";
 const NONCE_TTL_MS = 2 * 60 * 1000; // 2 min
@@ -38,6 +39,7 @@ interface MatchRequest {
   timestamp: number;
   challengeId?: string;
   series?: SeriesPoint[];
+  pantalla?: unknown; // RevisionPantalla, validada con validarRevisionPantalla
 }
 
 async function ensureCacheLoaded(): Promise<void> {
@@ -195,7 +197,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "JSON inválido" }, { status: 400 });
     }
 
-    const { descriptor, descriptor2, quality, nonce, timestamp, challengeId, series } = body;
+    const { descriptor, descriptor2, quality, nonce, timestamp, challengeId, series, pantalla } = body;
 
     if (!Array.isArray(descriptor) || descriptor.length !== 128 || !descriptor.every((n) => typeof n === "number" && Number.isFinite(n))) {
       return NextResponse.json({ error: "Descriptor inválido (requiere 128 floats finitos)" }, { status: 400 });
@@ -215,6 +217,35 @@ export async function POST(req: Request) {
 
     if (typeof timestamp !== "number" || Math.abs(Date.now() - timestamp) > TIMESTAMP_WINDOW_MS) {
       return NextResponse.json({ error: "Timestamp fuera de ventana (±60s)" }, { status: 400 });
+    }
+
+    // Anti-suplantación: el kiosco revisa que el rostro no se muestre en un
+    // celular o pantalla (lib/anti-pantalla-reglas.ts). Sin revisión no se ficha.
+    const ip = req.headers.get("x-forwarded-for") ?? undefined;
+    const revisionPantalla = validarRevisionPantalla(pantalla);
+    if (!revisionPantalla.ok) {
+      await audit("MATCH_KIOSCO_PANTALLA", `Match rechazado: ${revisionPantalla.error}`, { ip });
+      return NextResponse.json({ error: `Kiosco desactualizado: ${revisionPantalla.error}. Recargue la página.`, tipo: "pantalla_requerida" }, { status: 400 });
+    }
+    if (revisionPantalla.revision.detectado) {
+      if (!(await checkAndStoreNonce(nonce))) {
+        await audit("MATCH_KIOSCO_REPLAY", `Nonce repetido: ${nonce}`, { ip });
+        return NextResponse.json({ error: "Nonce ya utilizado" }, { status: 409 });
+      }
+      // Se identifica el rostro mostrado solo para la auditoría; nunca se ficha
+      // ni se devuelve la identidad al kiosco.
+      await ensureCacheLoaded();
+      const { match } = await performMatch(descriptor, descriptor2);
+      const { clase, score } = revisionPantalla.revision;
+      const dispositivo = etiquetaDispositivo(clase);
+      const mostrado = match
+        ? `${match.entry.nombre} ${match.entry.apellido} (${match.entry.cedula})`
+        : "rostro sin coincidencia";
+      await audit("MATCH_KIOSCO_PANTALLA", `Intento con ${dispositivo} frente a la cámara${score != null ? ` (confianza ${score.toFixed(2)})` : ""}; rostro mostrado: ${mostrado}`, { ip });
+      return NextResponse.json({
+        error: `Se detectó ${dispositivo} frente a la cámara. Presente su rostro directamente, sin dispositivos.`,
+        tipo: "pantalla_detectada",
+      }, { status: 403 });
     }
 
     const qualityError = validateQuality(quality);

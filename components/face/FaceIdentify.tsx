@@ -11,6 +11,8 @@ import {
 } from '@/lib/face-api';
 import { averageDescriptors } from '@/lib/descriptor-utils';
 import { FACE_QUALITY, evaluarIluminacion } from '@/lib/face-quality';
+import { cargarDetectorPantallas, detectarDispositivos } from '@/lib/anti-pantalla';
+import { ANTI_PANTALLA, dispositivoSobreRostro, etiquetaDispositivo, type DispositivoDetectado } from '@/lib/anti-pantalla-reglas';
 import { api } from '@/lib/api';
 
 interface FaceQualityData {
@@ -135,6 +137,10 @@ export function FaceIdentify({
   const currentStepIdxRef = useRef<number>(0);
   const lastPoseRef = useRef<{ yaw: number; pitch: number } | null>(null);
   const probeBufferRef = useRef<Float32Array[]>([]);
+  // Anti-pantalla del intento en curso: revisiones hechas y dispositivo hallado sobre el rostro.
+  const pantallaRef = useRef<{ revisiones: number; ultimoMs: number; detectado: DispositivoDetectado | null }>(
+    { revisiones: 0, ultimoMs: 0, detectado: null }
+  );
 
   useEffect(() => {
     stateRef.current = state;
@@ -144,7 +150,8 @@ export function FaceIdentify({
     let mounted = true;
     async function loadModels() {
       try {
-        await loadFaceApiModels();
+        // Falla cerrado: sin detector de celulares/pantallas el kiosco no ficha.
+        await Promise.all([loadFaceApiModels(), cargarDetectorPantallas()]);
         if (mounted) {
           setState('starting_camera');
           startCamera();
@@ -216,6 +223,7 @@ export function FaceIdentify({
     challengeStartTimeRef.current = 0;
     lastPoseRef.current = null; // Reiniciar referencia de pose para que no sume deltas falsos
     probeBufferRef.current = []; // Descartar muestras del intento anterior
+    pantallaRef.current = { revisiones: 0, ultimoMs: 0, detectado: null };
   };
 
   // 403 fuera_de_margen: el rostro SÍ coincidió, el fichaje fue bloqueado por
@@ -426,6 +434,7 @@ export function FaceIdentify({
               setState('matching');
               setMessage('Comparando…');
               probeBufferRef.current = []; // intento nuevo: acumular muestras frescas
+              pantallaRef.current = { revisiones: 0, ultimoMs: 0, detectado: null };
               console.log('[Kiosco] challenge completo, enviando probe al servidor en el próximo ciclo…');
             } else {
               updateChallengeUI();
@@ -449,22 +458,48 @@ export function FaceIdentify({
             markProgress();
             return;
           }
-          probeBufferRef.current.push(Float32Array.from(det.descriptor as Float32Array));
-          if (probeBufferRef.current.length > PROBE_TOTAL) probeBufferRef.current.shift();
-          if (probeBufferRef.current.length < PROBE_TOTAL) {
-            setMessage(`Comparando… muestra ${probeBufferRef.current.length}/${PROBE_TOTAL}`);
-            markProgress();
-            return;
+          // Anti-pantalla: el rostro no debe estar dentro de un celular, TV o laptop.
+          // Se revisa al empezar, cada ANTI_PANTALLA.intervaloMs y siempre en la
+          // última muestra, para que el probe enviado quede cubierto.
+          const pantalla = pantallaRef.current;
+          const ultimaMuestra = probeBufferRef.current.length + 1 >= PROBE_TOTAL;
+          if (ultimaMuestra || Date.now() - pantalla.ultimoMs >= ANTI_PANTALLA.intervaloMs) {
+            const intento = attemptIdRef.current;
+            const dispositivos = await detectarDispositivos(video);
+            if (attemptIdRef.current !== intento || stateRef.current !== 'matching') return;
+            pantalla.revisiones++;
+            pantalla.ultimoMs = Date.now();
+            const hallado = dispositivoSobreRostro(box, dispositivos);
+            if (hallado) {
+              pantalla.detectado = hallado;
+              console.log(`[Kiosco] rostro dentro de ${hallado.clase} (${hallado.score.toFixed(2)}): marcaje bloqueado`);
+            }
+          }
+
+          if (!pantalla.detectado) {
+            probeBufferRef.current.push(Float32Array.from(det.descriptor as Float32Array));
+            if (probeBufferRef.current.length > PROBE_TOTAL) probeBufferRef.current.shift();
+            if (probeBufferRef.current.length < PROBE_TOTAL) {
+              setMessage(`Comparando… muestra ${probeBufferRef.current.length}/${PROBE_TOTAL}`);
+              markProgress();
+              return;
+            }
           }
           matchingRef.current = true;
           const myAttempt = attemptIdRef.current;
           markProgress();
-          console.log('[Kiosco] enviando doble probe al servidor…');
+          // Con dispositivo detectado se envía igual (un solo probe) para que el
+          // servidor lo audite con la identidad mostrada; el servidor no ficha.
+          console.log(pantalla.detectado ? '[Kiosco] reportando celular/pantalla al servidor…' : '[Kiosco] enviando doble probe al servidor…');
           try {
-            const win1 = probeBufferRef.current.slice(0, PROBE_SAMPLES);
-            const win2 = probeBufferRef.current.slice(PROBE_SAMPLES, PROBE_TOTAL);
-            const descriptor = Array.from(averageDescriptors(win1));
-            const descriptor2 = Array.from(averageDescriptors(win2));
+            let descriptor: number[];
+            let descriptor2: number[] | undefined;
+            if (pantalla.detectado) {
+              descriptor = Array.from(det.descriptor as Float32Array);
+            } else {
+              descriptor = Array.from(averageDescriptors(probeBufferRef.current.slice(0, PROBE_SAMPLES)));
+              descriptor2 = Array.from(averageDescriptors(probeBufferRef.current.slice(PROBE_SAMPLES, PROBE_TOTAL)));
+            }
             probeBufferRef.current = [];
             const quality = {
               earOk: true, // parpadeo ya no es requisito
@@ -486,6 +521,13 @@ export function FaceIdentify({
               timestamp,
               challengeId: challengeIdRef.current ?? undefined,
               series: seriesRef.current.length > 0 ? seriesRef.current : undefined,
+              pantalla: {
+                revisado: pantalla.revisiones > 0,
+                detectado: pantalla.detectado !== null,
+                revisiones: pantalla.revisiones,
+                clase: pantalla.detectado?.clase,
+                score: pantalla.detectado ? Number(pantalla.detectado.score.toFixed(3)) : undefined,
+              },
             });
             console.log('[Kiosco] respuesta match:', result.ok ? `${result.tipo} — ${result.msg}` : result);
             if (attemptIdRef.current !== myAttempt) {
@@ -642,6 +684,19 @@ export function FaceIdentify({
                   setMessage('Escaneando… presente su rostro');
                 }
               }, 2000);
+            } else if (e.status === 403 && e.data?.tipo === 'pantalla_detectada') {
+              const msg = e.data?.error ?? `Se detectó ${etiquetaDispositivo(pantallaRef.current.detectado?.clase)} frente a la cámara`;
+              setState('rejected');
+              setMessage(msg);
+              notifyRejected({ tipo: 'pantalla_detectada', msg });
+              matchingRef.current = false;
+              resetChallenge();
+              setTimeout(() => {
+                if (stateRef.current === 'rejected') {
+                  setState('scanning');
+                  setMessage('Escaneando… presente su rostro');
+                }
+              }, 3500);
             } else if (e.status === 403) {
               // Reposo médico: el rechazo no se resuelve con un pase, no sugerirlo.
               const msg = e.data?.tipo === 'reposo_medico'

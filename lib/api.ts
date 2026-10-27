@@ -1,4 +1,6 @@
 // lib/api.ts — Cliente API tipado para el frontend
+import type { RevisionPantalla } from "./anti-pantalla-reglas";
+
 const API_BASE = "";
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
@@ -223,7 +225,7 @@ export const api = {
       fetchJson<{ challengeId: string; steps: string[]; expiresAt: string }>("/api/kiosco/challenge", {
         headers: { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KIOSCO_KEY ?? ""}` },
       }),
-    match: (data: { descriptor: number[]; descriptor2?: number[]; quality: any; nonce: string; timestamp: number; challengeId?: string; series?: { yaw: number; pitch: number; t: number }[] }) =>
+    match: (data: { descriptor: number[]; descriptor2?: number[]; quality: any; nonce: string; timestamp: number; challengeId?: string; series?: { yaw: number; pitch: number; t: number }[]; pantalla: RevisionPantalla }) =>
       fetchJson<{ ok: boolean; tipo: string; msg: string; extrasH?: number; empleadoId?: number; nombre?: string; apellido?: string; cedula?: string; error?: string; dobleCheck?: boolean }>("/api/kiosco/match", {
         method: "POST",
         body: JSON.stringify(data),

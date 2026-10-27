@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "AccionAuditoria" ADD VALUE 'MATCH_KIOSCO_PANTALLA';

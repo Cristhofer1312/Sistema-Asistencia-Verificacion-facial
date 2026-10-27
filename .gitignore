@@ -7,3 +7,4 @@ pgdata/
 public/models/*.bin
 public/models/*.json
 certs/
+public/models/coco-ssd/

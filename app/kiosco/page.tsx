@@ -145,7 +145,12 @@ export default function Kiosco() {
 
   const handleUnknown = () => mostrar({ tipo: "error", nombre: "", estado: "Rostro no reconocido. Verifique que esté registrado." }, 2500);
 
-  const handleRejected = (info: { msg: string; nombre?: string; apellido?: string; cedula?: string }) => {
+  const handleRejected = (info: { tipo: string; msg: string; nombre?: string; apellido?: string; cedula?: string }) => {
+    // Celular/pantalla frente a la cámara: no se identifica a nadie ni aplica pase previo.
+    if (info.tipo === "pantalla_detectada") {
+      mostrar({ tipo: "error", nombre: "Marcaje bloqueado", estado: info.msg }, 4000);
+      return;
+    }
     const nombre = info.nombre ? `${info.nombre} ${info.apellido ?? ""}`.trim() : "Rostro reconocido";
     mostrar({
       tipo: "warn",
